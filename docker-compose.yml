@@ -1,0 +1,28 @@
+services:
+  viewscan:
+    build: .
+    container_name: viewscan
+    restart: unless-stopped
+    # node would be PID 1; an init makes `docker stop` quick.
+    init: true
+    ports:
+      - "${VIEWSCAN_BIND:-0.0.0.0}:${VIEWSCAN_PORT:-8127}:8080"
+    environment:
+      # Optional login, as "user:password". Scans are medical data: set this in a
+      # .env file if anyone else can reach this machine.
+      BASIC_AUTH: ${VIEWSCAN_AUTH:-}
+    volumes:
+      # Every folder in here is a project in the app. By default that is this
+      # folder itself (the app's own folders are skipped); set VIEWSCAN_SCANS in a
+      # .env file to keep scans somewhere else. Read-only: scans are never changed.
+      - ${VIEWSCAN_SCANS:-.}:/scans:ro
+      # Header index, so restarts do not re-read every file.
+      - viewscan-cache:/cache
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  viewscan-cache:

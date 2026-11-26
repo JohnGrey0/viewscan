@@ -1,0 +1,5 @@
+# Only the app goes into the image. Scans are mounted at run time, never copied.
+*
+!package.json
+!server.js
+!public

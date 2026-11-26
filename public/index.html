@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viewscan</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f1524'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%232dd4bf' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23a78bfa'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app" class="mode-2d">
+  <header id="topbar">
+    <div class="brand"><span class="logo"></span>Viewscan</div>
+    <div id="study-title"></div>
+    <div class="seg" id="mode-switch" title="2D shows the original images. 3D rebuilds the scan as a volume: three planes, a 3D view and 3D models.">
+      <button data-mode="2d" class="on">2D images</button>
+      <button data-mode="3d">3D &amp; models</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" id="btn-open" title="View a folder of DICOM files from anywhere on this computer (nothing is uploaded)">Open folder…</button>
+    <button class="btn ghost" id="btn-details">Scan details</button>
+    <button class="btn ghost" id="btn-help">Help</button>
+  </header>
+
+  <aside id="sidebar">
+    <div id="side-head">
+      <div class="side-row">
+        <select id="project" title="Each folder of scans is a project. Pick which one to show."></select>
+        <button class="btn ghost" id="btn-forget" hidden title="Take this project off the list. The scan files on your disk are never touched, and you can bring it back.">Remove</button>
+      </div>
+      <div id="side-status" hidden></div>
+      <div class="side-row">
+        <select id="sort" title="Order of the list">
+          <option value="scan">Scan order</option>
+          <option value="3d">3D-ready first</option>
+          <option value="count">Most images first</option>
+          <option value="name">Name (A–Z)</option>
+          <option value="plane">By plane</option>
+        </select>
+        <label class="check small" title="Hide series that cannot be opened in 3D"><input type="checkbox" id="only3d"> 3D only</label>
+      </div>
+    </div>
+    <div id="library"></div>
+  </aside>
+  <div id="side-resize" title="Drag to make the list wider or narrower. Double-click to reset."></div>
+
+  <div id="toolbar"></div>
+
+  <main id="views"></main>
+
+  <aside id="panel3d">
+    <section>
+      <h3>3D view</h3>
+      <div class="seg wide" id="r3-show"><button data-v="volume" class="on">Scan</button><button data-v="models">Models</button></div>
+      <div id="r3-volume">
+        <div class="seg wide" id="r3-mode"><button data-v="surface" class="on">Surface</button><button data-v="mip">X-ray (MIP)</button></div>
+        <label class="row" id="r3-iso-row"><span>Surface level</span><input type="range" id="r3-iso"><output id="r3-iso-out"></output></label>
+        <div class="chips" id="r3-presets"></div>
+      </div>
+      <div class="chips" id="r3-look">
+        <button data-v="A" title="From the front">Front</button><button data-v="P">Back</button><button data-v="L">Left</button>
+        <button data-v="R">Right</button><button data-v="S">Top</button><button data-v="I">Bottom</button>
+      </div>
+    </section>
+    <section>
+      <h3>3D models</h3>
+      <p class="hint" id="models-hint"></p>
+      <div id="targets"></div>
+      <label class="row"><span>Detail</span>
+        <select id="seg-detail"><option value="1.4">Fast (1.4 mm)</option><option value="1" selected>Standard (1 mm)</option><option value="0.7">Fine (0.7 mm)</option></select>
+      </label>
+      <label class="row" title="How much the models are tidied after they are found. 'Clean' gives one solid, closed piece per part, ready to print."><span>Finish</span>
+        <select id="seg-finish">
+          <option value="raw">Raw (exactly as scanned)</option>
+          <option value="crisp">Crisp (most detail, one piece)</option>
+          <option value="clean" selected>Clean (print-ready)</option>
+          <option value="smooth">Smooth</option>
+          <option value="xsmooth">Extra smooth</option>
+          <option value="custom" hidden>Custom</option>
+        </select>
+      </label>
+      <details id="finish-more">
+        <summary>Fine-tune the finish</summary>
+        <label class="row" title="Irons out the stair-steps left by the scan's slices. Does not shrink the model."><span>Smoothing</span><input type="range" id="f-smooth" min="0" max="10" step="1"><output></output></label>
+        <label class="row" title="Anti-aliasing: blends the edge of each part over a wider band before the surface is traced. Higher is softer but loses fine detail."><span>Soften edges</span><input type="range" id="f-soften" min="0.4" max="2" step="0.1"><output></output></label>
+        <label class="row" title="Seals pinholes and narrow gaps up to this width."><span>Close gaps</span><input type="range" id="f-close" min="0" max="3" step="0.25"><output></output></label>
+        <label class="row" title="Removes flakes, threads and bridges thinner than this from the brain and skin. Bone is left alone, because thin bone is real."><span>Remove thin bits</span><input type="range" id="f-open" min="0" max="3" step="0.25"><output></output></label>
+        <label class="row" title="What to do with pieces that float free of the main part."><span>Floating pieces</span>
+          <select id="f-pieces"><option value="0">Keep all</option><option value="0.01">Drop specks</option><option value="0.1">Drop small pieces</option><option value="1">Keep only the main piece</option></select>
+        </label>
+        <label class="row" title="Fewer triangles make smaller files that slicers handle faster. The shape is kept as closely as possible."><span>Triangles</span>
+          <select id="f-reduce"><option value="1">All</option><option value="0.75">75%</option><option value="0.5">Half</option><option value="0.3">30%</option><option value="0.15">15%</option><option value="0.05">5%</option></select>
+        </label>
+        <label class="check" title="Fills spaces that are completely enclosed, so the model is solid inside."><input type="checkbox" id="f-fill"> Fill hollow spaces inside</label>
+      </details>
+      <details id="mr-more">
+        <summary>Fine-tune the MRI brain</summary>
+        <p class="hint">Say what looks wrong, or move the sliders. The slices show the result straight away: <i class="sw brain"></i> brain, <i class="sw fluid"></i> fluid inside the outline. When it looks right, press “Create 3D models”.</p>
+        <label class="row" title="Each choice sets the sliders below for one common problem. You can still move them afterwards."><span>What looks wrong?</span>
+          <select id="m-preset"></select>
+        </label>
+        <p class="hint" id="m-preset-why"></p>
+        <label class="row" title="The outline of the brain grows outward from the middle until it meets the dark skull. Fuller lets it push further (when brain is missing); tighter stops it sooner (when skull, eyes or face are included)."><span>Outline</span><input type="range" id="m-reach" min="-5" max="5" step="1"><output></output></label>
+        <label class="row" title="How much the outline resists bumps. Stiffer keeps it from bulging out through gaps in the skull; looser lets it follow the lobes of the brain more closely."><span>Outline stiffness</span><input type="range" id="m-stiff" min="-2" max="6" step="1"><output></output></label>
+        <label class="row" title="Moves the finished outline out or in by this much everywhere. Use it for a thin layer that is missing all round, or a thin shell of skull left on."><span>Pad or shave</span><input type="range" id="m-grow" min="-4" max="4" step="0.5"><output></output></label>
+        <label class="row" title="Everything further than this below the top of the brain is cut off. Lower it to lose the neck and spine; raise it if the bottom of the brain is cut. All the way left is automatic: four fifths of the brain's own length."><span>Cut off below</span><input type="range" id="m-bottom" min="95" max="175" step="5"><output></output></label>
+        <label class="row" title="Moves the line between brain and the fluid in its folds. Deeper cuts the folds deeper and wider, shallower fills them in. All the way left keeps everything inside the outline."><span>Fold depth</span><input type="range" id="m-folds" min="-6" max="5" step="1"><output></output></label>
+        <label class="row" title="The brain is two halves with a deep gap between them. This cuts the folds deeper along that gap, only where the scan is darker there, so the bridge that joins the halves stays."><span>Split the halves</span><input type="range" id="m-split" min="0" max="4" step="1"><output></output></label>
+        <label class="check" title="The cerebellum (lower back of the brain) and the brain stem are compact, not wrinkled like the rest. With this on, only real fluid gaps are cut there. Where they are is estimated from the shape of the brain, so it is approximate."><input type="checkbox" id="m-hind"> Keep the cerebellum and brain stem smooth</label>
+        <label class="row" title="For scans with slices far apart: blends neighboring slices so the model does not show a ridge at every slice. Higher is smoother but softens detail."><span>Blend slices</span><input type="range" id="m-blend" min="-0.5" max="3" step="0.5"><output></output></label>
+        <label class="row" title="Whether the fluid around the brain shows dark (T1, FLAIR) or bright (T2) in this series. Auto reads it from the scan."><span>Fluid looks</span>
+          <select id="m-fluid"><option value="auto">Auto</option><option value="dark">Dark</option><option value="bright">Bright</option></select>
+        </label>
+        <label class="check" title="Fat under the skin, behind the eyes and inside the skull bone is much brighter than brain on most scans. Treating it as not-brain stops the outline there."><input type="checkbox" id="m-fat"> Stop at very bright fat</label>
+        <label class="check" title="Tints the slices as you change things, without building the 3D model. It is worked out on a coarse grid, so the finished model follows the scan more closely."><input type="checkbox" id="m-live"> Show the result on the slices as I change things</label>
+        <div id="m-status"></div>
+        <div id="m-default" hidden><span id="m-default-text"></span> <button class="link" id="m-undefault" type="button">Forget my default</button></div>
+        <button class="btn" id="m-reset" type="button">Back to automatic</button>
+      </details>
+      <details id="combine-more">
+        <summary>Still blurry? Combine scans</summary>
+        <p class="hint" id="combine-hint"></p>
+        <div id="combine-list"></div>
+        <button class="btn" id="btn-combine" type="button">Combine these scans</button>
+        <div id="combine-status"></div>
+      </details>
+      <label class="row" id="bone-row"><span>Bone starts at</span><input type="number" id="seg-bone" value="300" step="25"><span class="unit">HU</span></label>
+      <button class="btn primary big" id="btn-build">Create 3D models</button>
+      <button class="btn big" id="btn-compare" title="Builds the brain two dozen different ways and shows them side by side, so you can pick the one that looks best. Uses most of the processor for a minute or so.">Try many versions and compare</button>
+      <button class="btn" id="btn-copy-settings" title="Copies every model setting on this panel as text, to paste into a message or a note">Copy these settings</button>
+      <div id="seg-progress"><div class="bar"><i></i></div><span></span></div>
+      <div id="models"></div>
+      <div id="model-opts">
+        <label class="row"><span>Cut away</span>
+          <select id="cut-axis"><option value="">Off</option><option value="S">From top</option><option value="A">From front</option><option value="L">From left</option></select>
+        </label>
+        <input type="range" id="cut-pos" min="0" max="100" value="50">
+        <label class="check"><input type="checkbox" id="show-overlay" checked> Color the models on the slices</label>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<div id="splash"><div class="splash-box"><div class="spinner"></div><div id="splash-text">Looking for scans…</div></div></div>
+<div id="compare" hidden>
+  <header>
+    <h2 id="cmp-title"></h2>
+    <span id="cmp-progress"></span>
+    <div class="spacer"></div>
+    <div class="chips" id="cmp-look">
+      <button data-v="A">Front</button><button data-v="P">Back</button><button data-v="L">Left</button><button data-v="R">Right</button><button data-v="S">Top</button><button data-v="I">Bottom</button>
+    </div>
+    <button class="btn" id="cmp-more" title="Adds twelve more versions, each with a mix of settings that has not been tried on this series yet">Try 12 more that have not been tried</button>
+    <button class="btn" id="cmp-close">Close without choosing</button>
+  </header>
+  <div id="cmp-grid"></div>
+</div>
+<div id="drop-hint">Drop a folder of scan files to view it</div>
+<dialog id="dialog"><div id="dialog-body"></div><form method="dialog"><button class="btn primary">Close</button></form></dialog>
+<input type="file" id="folder-input" webkitdirectory multiple hidden>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

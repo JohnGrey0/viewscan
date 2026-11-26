@@ -1,0 +1,20 @@
+# Medical data never goes into version control.
+# Everything is ignored except the app itself.
+/*
+!/.gitignore
+!/public/
+!/test/
+!/server.js
+!/package.json
+!/start.bat
+!/start.sh
+!/Dockerfile
+!/docker-compose.yml
+!/.dockerignore
+!/README.md
+!/CLAUDE.md
+/test/shots/
+/test/fixtures/
+__pycache__/
+!/.gitattributes
+!/.github/
