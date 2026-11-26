@@ -142,3 +142,5 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   the COOP/COEP headers so helper threads work. Keep every address in `public/`
   relative (the site lives in a sub-folder). Never publish scan data or a sample
   scan with it. Test: `test/pages.py`.
+  Publish: `git subtree push --prefix public origin gh-pages` from `pages` (GitHub
+  Pages serves the `gh-pages` branch; no workflow).

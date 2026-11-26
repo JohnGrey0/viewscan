@@ -35,7 +35,9 @@ is viewing, so the Mac mini only hands out files. Without Docker, `./start.sh`
 ## On a plain web host (GitHub Pages)
 
 The `pages` branch also runs with no server at all: `public/` is the whole site.
-Pushing that branch publishes it through `.github/workflows/pages.yml`.
+The live site is the `gh-pages` branch, which holds only the contents of
+`public/`. To publish a new version: `git subtree push --prefix public origin gh-pages`
+from the `pages` branch.
 
 - There is no built-in library there. Scans are opened with **Open folder…**; the
   files are read by the browser on that computer and are never uploaded.
