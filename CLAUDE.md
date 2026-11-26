@@ -88,10 +88,11 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   shared GL renderer into one canvas per tile. The owner wants detail, not blobs:
   keep the list weighted toward crisp finishes and deeper folds. A chosen version
   can become the default for its kind of scan (`mrdef.<kind key>` in localStorage;
-  a series' own `mr.<stack id>` wins over it). Grid builds use `opts.alone` (no
-  helper threads) and a memory budget: with helpers, shared memory lingered after
-  each build and the tab ran out after about a dozen ("Array buffer allocation
-  failed"). Do not run them all at once.
+  a series' own `mr.<stack id>` wins over it). Grid builds share the cores: 4 threads
+  each (`opts.helpers`), 8 for a fine grid, within a memory budget that grows with
+  the core count. Measured on the owner's 32-thread desktop, 28 versions: 4 threads
+  each 75 s, 7 each 97 s, 2 each 135 s, 1 each (24 at once) 184 s. A failed build
+  is retried by itself. Each build ends its own helper threads (see below).
 - Region-aware folds (step 4b of `segmentMR`): deeper cut on the plane between the
   halves, smooth cerebellum and brain stem, surface groove between cerebellum and
   cerebrum. The cerebellum boundary is looked up in the scan (the fluid-like gap of
