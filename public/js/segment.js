@@ -48,7 +48,7 @@ export function threadCount() { return helperCount() + 1; }
  * Stage 1 (one worker) finds every part; stage 2 cleans and meshes the parts
  * side by side, one worker (one processor core) per part.
  * @param {import('./volume.js').Volume} vol
- * @param {{targets:string[], alone?:boolean, voxel:number, boneHU:number, modality:'CT'|'MR', finish:object, solid:object, mr?:object}} opts  mr = MRI fine-tuning, see segmentMR
+ * @param {{targets:string[], alone?:boolean, helpers?:number, voxel:number, boneHU:number, modality:'CT'|'MR', finish:object, solid:object, mr?:object}} opts  mr = MRI fine-tuning, see segmentMR
  * @param {(fraction:number, text:string)=>void} onProgress
  */
 export function buildModels(vol, opts, onProgress) {
@@ -70,10 +70,9 @@ export function buildModels(vol, opts, onProgress) {
   });
 
   return (async () => {
-    // opts.alone: build without helper threads, on one core per worker. Used when
-    // many builds run side by side (the compare grid), where cores are better spent
-    // on more builds than on speeding up each one.
-    const pool = opts.alone ? [] : startHelpers(helperCount());
+    // opts.alone: build without helper threads; opts.helpers: use at most this many.
+    // Used when many builds run side by side (the compare grid) and share the cores.
+    const pool = opts.alone ? [] : startHelpers(Math.min(helperCount(), opts.helpers ?? Infinity));
     workers.push(...pool); // ended with the build
     const segPorts = connect(pool);
     const seg = await run({
