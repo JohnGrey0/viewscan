@@ -1013,7 +1013,7 @@ const MR_VARIANTS = [
   { label: 'Cut off low, deep folds', set: { bottom: 165, folds: 4 }, finish: 'smooth' },
   { label: 'Overall shape only', set: { folds: -6 }, finish: 'smooth' },
 ];
-const cmp = { run: 0, tiles: [], queue: [], busy: 0, load: 0, done: 0, cam: null, radius: 100, vol: null, fit: 1, t0: 0 };
+const cmp = { run: 0, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0, cam: null, radius: 100, vol: null, fit: 1, t0: 0 };
 const variantKey = (v) => JSON.stringify([Object.entries({ ...MR_DEFAULT, ...v.set, preset: '' }).sort(), v.finish || 'clean', v.voxel || 0]);
 /** What a version changes, in plain words. */
 function variantWhy(v) {
@@ -1148,14 +1148,18 @@ function addCompare(variants) {
     first = first || tile;
   }
   $('#cmp-title').textContent = `${stack.title}: ${cmp.tiles.length} ways to build the brain`;
-  // How many to build at once. Each build runs on its own (one core for finding the
-  // brain, one for meshing it), so a big machine can run many; but a browser tab
-  // only has a few gigabytes to work with, and a build needs a couple of dozen
-  // copies of its grid. So builds are started while their estimated memory fits a
-  // budget; a fine-grid build may have to run on its own.
+  // How many to build at once. The machine's cores are shared out: every build gets
+  // a few threads of its own (a fine-grid build twice as many), and builds are
+  // started while threads are free. Many small builds side by side finish sooner
+  // than a few big ones, but one thread each is slow for the fine grids.
+  // Memory is the other limit: a build needs a couple of dozen copies of its grid.
+  // The browser does not say how much memory the machine has, so the budget goes by
+  // the number of cores (big machines have both). A build that fails is tried once
+  // more by itself, with all the threads.
   const cores = navigator.hardwareConcurrency || 4;
-  const slots = Math.max(1, Math.min(8, Math.floor(cores / 3)));
-  const BUDGET = 8e9;
+  const THREADS = Math.max(1, cores > 8 ? cores - 4 : cores - 1), PER = Math.min(THREADS, 4);
+  const need = (v) => (v.solo ? THREADS : Math.min(THREADS, (v.voxel && v.voxel < 1 ? 2 : 1) * PER));
+  const BUDGET = 8e9 * Math.max(1, Math.min(4, cores / 8));
   const mm3 = vol.nx * vol.ny * vol.nz * vol.spacing[0] * vol.spacing[1] * vol.spacing[2];
   const cost = (v) => (v.solo ? BUDGET : mm3 / (v.voxel || Number($('#seg-detail').value)) ** 3 * 4 * 28);
   const prog = () => {
@@ -1163,7 +1167,7 @@ function addCompare(variants) {
     $('#cmp-progress').textContent = cmp.done < n ? `${cmp.done} of ${n} ready…` : `All ${n} ready. Drag any picture to turn them all; scroll for more.`;
     $('#cmp-more').disabled = cmp.done < n;
   };
-  const runOne = async (tile, slot) => {
+  const runOne = async (tile) => {
     const v = tile.variant;
     tile.status.textContent = 'Building…';
     try {
@@ -1172,7 +1176,7 @@ function addCompare(variants) {
       if (v.voxel) opts.voxel = v.voxel;
       // a build that never answers (its worker died without a word) must not hold up the rest
       const result = await Promise.race([
-        buildModels(vol, { ...opts, alone: cost(v) < BUDGET / 2 }, (p, text) => { if (run === cmp.run) tile.status.textContent = text; }),
+        buildModels(vol, { ...opts, alone: need(v) < 2, helpers: need(v) - 1 }, (p, text) => { if (run === cmp.run) tile.status.textContent = text; }),
         new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 300000)),
       ]);
       if (run !== cmp.run) return;
@@ -1198,19 +1202,17 @@ function addCompare(variants) {
       else tile.status.textContent = 'Could not build this one';
     }
   };
-  // cmp.busy: bit k set while slot k is building; cmp.load: memory the running builds are counted for
+  // cmp.busy: builds running; cmp.used: threads they hold; cmp.load: memory they are counted for
   const pump = () => {
     if (run !== cmp.run) return;
     while (cmp.queue.length) {
-      let slot = 0;
-      while (slot < slots && (cmp.busy & (1 << slot))) slot++;
-      const c = cost(cmp.queue[0].variant);
-      if (slot >= slots || (cmp.busy && cmp.load + c > BUDGET)) break;
+      const v = cmp.queue[0].variant, c = cost(v), n = need(v);
+      if (cmp.busy && (cmp.used + n > THREADS || cmp.load + c > BUDGET)) break;
       const tile = cmp.queue.shift();
-      cmp.busy |= 1 << slot; cmp.load += c;
-      runOne(tile, slot).then(() => {
+      cmp.busy++; cmp.used += n; cmp.load += c;
+      runOne(tile).then(() => {
         if (run !== cmp.run) return;
-        cmp.busy &= ~(1 << slot); cmp.load -= c; cmp.done++;
+        cmp.busy--; cmp.used -= n; cmp.load -= c; cmp.done++;
         prog(); drawCompare();
         if (!cmp.busy && !cmp.queue.length) app.compareDone = true; else pump();
       });
@@ -1225,7 +1227,7 @@ function openCompare() {
   const vol = app.volume;
   if (!vol || app.building || vol.stack.unit === 'HU') return;
   cmp.run++;
-  Object.assign(cmp, { vol, cam: null, fit: 1, tiles: [], queue: [], busy: 0, load: 0, done: 0 });
+  Object.assign(cmp, { vol, cam: null, fit: 1, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0 });
   $('#compare').hidden = false;
   $('#cmp-grid').textContent = '';
   addCompare(MR_VARIANTS);
