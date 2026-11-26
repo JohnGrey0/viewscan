@@ -135,3 +135,9 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   sequence family, contrast from the description). The result is a synthetic
   series (`st.combined`, a pinned `Stack` in `app.stacks`) that lives in memory
   only. `node test/fuselab.mjs` shows base / plain average / combined side by side.
+- Static hosting (`pages` branch, GitHub Pages): the page asks for `api/library`
+  with a relative address; an answer that is not the Viewscan server sets
+  `app.hosted` and the page runs on opened folders only. `isolate.js` + `sw.js` add
+  the COOP/COEP headers so helper threads work. Keep every address in `public/`
+  relative (the site lives in a sub-folder). Never publish scan data or a sample
+  scan with it. Test: `test/pages.py`.

@@ -32,6 +32,18 @@ The heavy work (decoding, 3D, building models) happens in the browser of whoever
 is viewing, so the Mac mini only hands out files. Without Docker, `./start.sh`
 (or `HOST=0.0.0.0 node server.js`) does the same job.
 
+## On a plain web host (GitHub Pages)
+
+The `pages` branch also runs with no server at all: `public/` is the whole site.
+Pushing that branch publishes it through `.github/workflows/pages.yml`.
+
+- There is no built-in library there. Scans are opened with **Open folder…**; the
+  files are read by the browser on that computer and are never uploaded.
+- Fast model building needs two headers a static host cannot send. A small
+  service worker (`public/sw.js`, started by `public/isolate.js`) adds them, and
+  the page reloads itself once on the first visit.
+- `python test/pages.py` checks all of this against a plain file server.
+
 ## Adding scans
 
 - Put a folder of DICOM files anywhere inside this folder and reload the page, or
