@@ -55,7 +55,7 @@ export const pool = new Pool(POOL_SIZE);
 
 /** Where file bytes come from: the local server, or files the user dropped in. */
 export function srcFor(source, file) {
-  return source.type === 'local' ? { file: source.files[file] } : { url: `/api/file/${file}` };
+  return source.type === 'local' ? { file: source.files[file] } : { url: `api/file/${file}` };
 }
 
 function percentileWindow(data) {

@@ -69,7 +69,7 @@ const app = {
   redrawAll() { for (const v of this.views) v.invalidate(); },
   displayChanged() { this.redrawAll(); syncPreset(); },
   sliceChanged() {},
-  emptyText() { return this.studies.length ? 'Pick a series on the left' : ''; },
+  emptyText() { return this.studies.length ? 'Pick a series on the left' : this.hosted ? 'Click “Open folder…” at the top and pick a folder of scan files (DICOM). Nothing is uploaded: the files are read on this computer and stay on it.' : ''; },
   setFocus(p) {
     const vol = this.volume; if (!vol) return;
     // snap to slice centers along each view normal, and keep inside the volume
@@ -115,8 +115,15 @@ async function loadLibrary(rescan = false) {
   splash.classList.remove('hidden');
   for (let first = true; ; first = false) {
     let res;
-    try { res = await (await fetch('/api/library' + (rescan && first ? '?rescan=1' : ''))).json(); }
-    catch { $('#splash-text').textContent = 'Cannot reach the Viewscan server. Is it still running?'; await sleep(1500); continue; }
+    // The address is relative so the page also works from a sub-folder of a site.
+    let reply = null;
+    try { reply = await fetch('api/library' + (rescan && first ? '?rescan=1' : '')); res = reply.ok ? await reply.json() : null; }
+    catch { res = null; }
+    // Something answered, but it is not the Viewscan server: the page is on a plain
+    // web host (GitHub Pages, for one). There is no built-in library then; the page
+    // works on folders opened in this browser, which never leave the computer.
+    if (!res && reply && !app.sources.has('server')) { app.hosted = true; break; }
+    if (!res) { $('#splash-text').textContent = 'Cannot reach the Viewscan server. Is it still running?'; await sleep(1500); continue; }
     if (res.status === 'ready') {
       app.sources.set('server', { type: 'server' });
       // projects taken off the list with "Remove" stay on disk; they are only left out here
@@ -133,6 +140,7 @@ async function loadLibrary(rescan = false) {
   splash.classList.add('hidden');
   app.libraryLoaded = true;
   renderLibrary();
+  if (app.hosted) app.redrawAll(); // the empty views now say how to open a folder
   if (!app.volume && !app.views.some((v) => v.stack)) openDefault();
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
