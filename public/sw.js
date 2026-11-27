@@ -5,7 +5,10 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.cache === 'only-if-cached' && req.mode !== 'same-origin') return;
-  e.respondWith(fetch(req).then((res) => {
+  // The app's own files are always checked against the site (a cheap "has it changed?"
+  // request), so a visitor never runs a mix of old and new files after an update.
+  const own = req.method === 'GET' && new URL(req.url).origin === self.location.origin;
+  e.respondWith(fetch(own ? new Request(req, { cache: 'no-cache' }) : req).then((res) => {
     if (res.status === 0) return res; // opaque answer from another site: cannot be changed
     const headers = new Headers(res.headers);
     headers.set('Cross-Origin-Opener-Policy', 'same-origin');
