@@ -219,3 +219,10 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   "single"; a sharp scan stays with `partsBig`; T2/PD stay classic. The owner's verdicts
   (2026-11-27): generation 3 is the best on his study's head scout, the study model on its
   6 mm series. A new model is listed without `auto` until he has judged it.
+- Compare window, 2026-11-27 (this replaces "about 70 builds at once" above; the owner asked): it
+  opens with the best versions only (`bestVariants`: about 15: the model Auto picks for the scan
+  with six settings, the other home-trained models that have a job, any model installed after
+  them, the 18-part model, and three classic ones). "Show all the standard versions" (`#cmp-all`)
+  adds the rest of `AI_VARIANTS` + `MR_VARIANTS`; "Try 30 more" adds random untried mixes.
+  Never put "whole study" averaging in the best set: it blurred the folds on his scout.
+  `test/ai.py` was updated for this but not re-run that day (the graphics card was training).
