@@ -122,17 +122,14 @@ const app = {
     const m = this.models();
     return m ? m.items.filter((it) => it.visible && it.mesh).map((it) => ({ mesh: it.mesh, color: it.color, opacity: it.opacity })) : [];
   },
-  clipPlane(cam) {
+  clipPlane() {
     const vol = this.volume;
     if (this.cut.follow && vol) {
-      // The cut follows the slice last scrolled through. The half toward the viewer is the one cut
-      // away, so the face of that slice is always what you see on the model, from any side.
-      // (A fixed side per plane was tried first: the owner saw the cut on the far side in two planes.)
+      // The cut follows the slice last scrolled through; what is above (in front of, left of) it is cut away.
+      // The side is fixed: flipping it to face the viewer was tried, and the owner found the model
+      // jumping or vanishing while he turned it.
       const plane = this.cut.plane || 'AX', g = vol.views[plane], want = { AX: [0, 0, 1], COR: [0, -1, 0], SAG: [1, 0, 0] }[plane];
-      const signs = this.cut.signs || (this.cut.signs = {});
-      const facing = cam ? -vec.dot(g.n, cam.f) : 0; // > 0: the slice's normal points at the viewer
-      if (Math.abs(facing) > 0.35 || !signs[plane]) signs[plane] = Math.abs(facing) > 0.35 ? Math.sign(facing) : Math.sign(vec.dot(g.n, want)) || 1; // seen edge-on, the side stays as it was
-      const n = vec.mul(g.n, signs[plane]);
+      const n = vec.mul(g.n, Math.sign(vec.dot(g.n, want)) || 1);
       return [...n, vec.dot(this.mpr.focus, n)];
     }
     if (!this.cut.axis || !vol) return null;
