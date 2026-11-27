@@ -152,17 +152,20 @@ kbd { background: #0d1322; border: 1px solid var(--line); border-radius: 5px; pa
 #finish-more summary { cursor: pointer; color: var(--accent); padding: 3px 0; }
 #finish-more .row > span:first-child { flex: 0 0 104px; }
 #finish-more output { width: 52px; font-size: 12.5px; }
-#mr-more { margin: 4px 0 8px; border: 1px solid var(--line); border-radius: 9px; padding: 4px 9px; background: #0f1627; }
-#mr-more summary { cursor: pointer; color: var(--accent); padding: 3px 0; }
-#mr-more .row > span:first-child { flex: 0 0 96px; }
-#mr-more output { width: 84px; font-size: 12px; white-space: nowrap; }
-#mr-more .btn { margin: 8px 0 5px; width: 100%; }
-#mr-more .hint { margin: 4px 0 6px; }
-#mr-more select { min-width: 0; flex: 1; }
-#mr-more #m-preset-why { color: var(--text); opacity: 0.85; }
-#mr-more .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; }
-#mr-more .sw.brain { background: #f0559e; }
-#mr-more .sw.fluid { background: #4d9eff; }
+#brain-how select { min-width: 0; flex: 1; }
+#brain-how .hint { margin: 2px 0 6px; }
+#a-status { font-size: 12px; opacity: 0.85; min-height: 1.2em; }
+:is(#mr-more, #ai-more) { margin: 4px 0 8px; border: 1px solid var(--line); border-radius: 9px; padding: 4px 9px; background: #0f1627; }
+:is(#mr-more, #ai-more) summary { cursor: pointer; color: var(--accent); padding: 3px 0; }
+:is(#mr-more, #ai-more) .row > span:first-child { flex: 0 0 96px; }
+:is(#mr-more, #ai-more) output { width: 84px; font-size: 12px; white-space: nowrap; }
+:is(#mr-more, #ai-more) .btn { margin: 8px 0 5px; width: 100%; }
+:is(#mr-more, #ai-more) .hint { margin: 4px 0 6px; }
+:is(#mr-more, #ai-more) select { min-width: 0; flex: 1; }
+:is(#mr-more, #ai-more) #m-preset-why { color: var(--text); opacity: 0.85; }
+:is(#mr-more, #ai-more) .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; }
+:is(#mr-more, #ai-more) .sw.brain { background: #f0559e; }
+:is(#mr-more, #ai-more) .sw.fluid { background: #4d9eff; }
 #combine-more { margin: 4px 0 8px; border: 1px solid var(--line); border-radius: 9px; padding: 4px 9px; background: #0f1627; }
 #combine-more summary { cursor: pointer; color: var(--accent); padding: 3px 0; }
 #combine-more .btn { margin: 8px 0 5px; width: 100%; }
@@ -179,10 +182,14 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); cur
 #compare h2 { margin: 0; font-size: 17px; }
 #compare .spacer { flex: 1; }
 #cmp-progress { color: var(--accent); font-size: 13.5px; }
-#cmp-grid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-auto-rows: clamp(360px, 46vh, 520px); gap: 10px; padding: 10px 12px; }
-@media (max-width: 1500px) { #cmp-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-@media (max-width: 1150px) { #cmp-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 800px) { #cmp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+#cmp-grid { flex: 1; min-height: 0; overflow: auto; padding: 4px 12px 12px; }
+.cmp-group > summary { margin: 10px 2px 2px; font-size: 15px; font-weight: 600; cursor: pointer; padding: 4px 6px; border-radius: 7px; }
+.cmp-group > summary:hover { background: rgba(255, 255, 255, 0.06); }
+.cmp-group > summary small { font-weight: normal; opacity: 0.7; margin-left: 8px; }
+.cmp-sec { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-auto-rows: clamp(360px, 46vh, 520px); gap: 10px; padding: 6px 0 10px; }
+@media (max-width: 1500px) { .cmp-sec { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 1150px) { .cmp-sec { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 800px) { .cmp-sec { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .cmp-tile { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
 .cmp-tile:hover { border-color: var(--accent); }
 .cmp-view { position: relative; flex: 1; min-height: 150px; background: #0b0f1a; }

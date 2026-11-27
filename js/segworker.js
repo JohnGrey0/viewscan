@@ -1020,7 +1020,67 @@ function fluidFromShape(field, env, limit) {
 //   hind   bool  keep the cerebellum and brain stem smooth (no fine wrinkles)
 // Steps are remembered on the grid (grid.memo), so the live preview only redoes
 // what a changed setting affects.
+// The brain as a neural network found it (opts.ai, see brainnet.js): its answer lives
+// in a standard 1 mm cube; here it is brought onto the working grid. The surface is
+// drawn where the network is half sure a voxel is brain, so it follows the outside of
+// the gray matter: folds stay as full as they are, and the gap between the two halves
+// and around the cerebellum is whatever the network saw there.
+function brainFromModel(grid, opts, rest, report) {
+  report(0.3, 'Placing the brain model\u2019s answer on the scan…');
+  const ai = opts.ai, mr = opts.mr || {}, S = 256, S2 = S * S;
+  const E = grid.e, w0 = grid.w0, A = ai.axes, c0 = ai.c0, prob = ai.prob, lab = ai.labels;
+  const dotA = (a, v) => A[a][0] * v[0] + A[a][1] * v[1] + A[a][2] * v[2];
+  const q0 = [0, 1, 2].map((a) => dotA(a, [w0[0] - c0[0], w0[1] - c0[1], w0[2] - c0[2]]));
+  const st = [0, 1, 2].map((g) => [0, 1, 2].map((a) => dotA(a, E[g]) * VOX)); // cube step per grid step
+  const P = floatVolume(), part = new Uint8Array(N);
+  for (let z = 0, o = 0; z < Z; z++) for (let y = 0; y < Y; y++) {
+    const bx = q0[0] + y * st[1][0] + z * st[2][0], by = q0[1] + y * st[1][1] + z * st[2][1], bz = q0[2] + y * st[1][2] + z * st[2][2];
+    for (let x = 0; x < X; x++, o++) {
+      const d = bx + x * st[0][0], h = by + x * st[0][1], w = bz + x * st[0][2];
+      if (d < 0 || h < 0 || w < 0 || d > S - 1 || h > S - 1 || w > S - 1) { P[o] = 0; continue; }
+      const d0 = d | 0, h0 = h | 0, w0i = w | 0, d1 = d0 < S - 1 ? d0 + 1 : d0, h1 = h0 < S - 1 ? h0 + 1 : h0, w1 = w0i < S - 1 ? w0i + 1 : w0i;
+      const td = d - d0, th = h - h0, tw = w - w0i;
+      const a = d0 * S2 + h0 * S, b = d0 * S2 + h1 * S, c = d1 * S2 + h0 * S, e = d1 * S2 + h1 * S;
+      const v0 = (prob[a + w0i] * (1 - tw) + prob[a + w1] * tw) * (1 - th) + (prob[b + w0i] * (1 - tw) + prob[b + w1] * tw) * th;
+      const v1 = (prob[c + w0i] * (1 - tw) + prob[c + w1] * tw) * (1 - th) + (prob[e + w0i] * (1 - tw) + prob[e + w1] * tw) * th;
+      P[o] = (v0 * (1 - td) + v1 * td) / 255;
+      part[o] = lab[Math.round(d) * S2 + Math.round(h) * S + Math.round(w)];
+    }
+  }
+  // "fold depth" moves how sure the network must be: deeper asks for more
+  const folds = mr.folds === 'none' ? -1 : Math.max(-1, Math.min(1, Number(mr.folds) || 0));
+  const level = 0.5 + 0.35 * folds;
+  let brain = largestComponent(thresh(P, level));
+  // Tidy up. Below the cerebellum only a short stump of the brain stem is kept: further
+  // down the network sometimes takes bits of the neck for brain, joined on through the
+  // spinal cord. Then anything that only hangs on by a thread (under 3 mm thick) goes.
+  const ups = [];
+  for (let i = 0; i < N; i += 3) if (brain[i] && (part[i] === 5 || part[i] === 6)) { const x = i % X, y = ((i / X) | 0) % Y, z = (i / XY) | 0; ups.push(w0[2] + VOX * (x * E[0][2] + y * E[1][2] + z * E[2][2])); }
+  if (ai.classes === 18 && ups.length > 2000) { // only the 18-part models number the cerebellum 5 and 6
+    ups.sort((a, b) => a - b);
+    const floor = ups[Math.floor(ups.length * 0.02)] - (mr.stump ?? 8);
+    if ((mr.stump ?? 8) < 30)
+    for (let z = 0, o = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++, o++) if (brain[o] && w0[2] + VOX * (x * E[0][2] + y * E[1][2] + z * E[2][2]) < floor) brain[o] = 0;
+  }
+  brain = and(brain, dilate(largestComponent(opening(brain, 1.6)), 2.4));
+  brain = largestComponent(brain);
+  const grow = Number(mr.grow) || 0;
+  if (grow > 0.2) brain = dilate(brain, grow); else if (grow < -0.2) brain = largestComponent(erode(brain, -grow));
+  const ml = count(brain) * VOX ** 3 / 1000;
+  const notes = { ...rest.notes };
+  notes.brain = ml < 600 || ml > 2200 ? 'The AI brain model gave an unusual size for this scan. It was trained on T1-weighted scans of the whole head; try “Classic” under “Fine-tune the MRI brain”.' : '';
+  const masks = { ...rest.masks, brain }, surfaces = { ...rest.surfaces };
+  if (Math.abs(grow) <= 0.2) surfaces.brain = { field: P, level, width: 1, sign: 1, within: dilate(brain, 1.5) };
+  const used = { tightened: 0, bottom: 0, level, blend: 0, fluid: '', ml: Math.round(ml), slice: grid.slice, model: ai.key };
+  return { masks, notes, surfaces, used, outline: brain, fine: grid.field, parts: part };
+}
+
 function segmentMR(grid, opts, want, report) {
+  if (opts.ai && want.brain) {
+    const others = Object.keys(want).some((k) => k !== 'brain' && want[k]);
+    const rest = others ? segmentMR(grid, { ...opts, ai: null }, { ...want, brain: false }, report) : { masks: {}, notes: {}, surfaces: {} };
+    return brainFromModel(grid, opts, rest, report);
+  }
   const W = grid.field, masks = {}, notes = {}, surfaces = {}, mr = opts.mr || {};
   const memo = grid.memo || (grid.memo = {});
   const auto = (v) => v === undefined || v === null || v === 'auto';
@@ -1489,7 +1549,11 @@ self.onmessage = (ev) => {
       // so a changed setting only redoes what depends on it. Nothing is meshed.
       if (m.vol) { const grid = resample(m.vol, m.opts.voxel); PREVIEW = { grid, dims: { X, Y, Z, VOX } }; }
       if (!PREVIEW) throw new Error('No scan to preview');
-      const seg = segmentMR(PREVIEW.grid, m.opts, { brain: true }, () => {});
+      // an AI model's answer comes along once and is kept with the scan
+      if (m.ai) PREVIEW.ai = m.ai;
+      const viaModel = m.opts.mr && m.opts.mr.model && m.opts.mr.model !== 'classic';
+      if (viaModel && !(PREVIEW.ai && PREVIEW.ai.key === m.opts.mr.model)) throw new Error('The brain model has not answered for this scan');
+      const seg = segmentMR(PREVIEW.grid, viaModel ? { ...m.opts, ai: PREVIEW.ai } : m.opts, { brain: true }, () => {});
       const { grid, dims } = PREVIEW;
       // 1 = brain, 2 = inside the outline but fluid
       const labels = new Uint8Array(N), brain = seg.masks.brain, outline = seg.outline;

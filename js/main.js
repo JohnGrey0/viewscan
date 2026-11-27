@@ -5,7 +5,7 @@ import { organize, PLANE_LABEL } from './series.js';
 import { Volume, vec } from './volume.js';
 import { GLRenderer } from './glrender.js';
 import { StackView, SliceView, View3D, fmtDate } from './views.js';
-import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume } from './segment.js';
+import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainModel } from './segment.js';
 import { saveFolder, removeFolder, loadFolders, updateSummaries, SUMMARY_FORMAT } from './localstore.js';
 
 const $ = (s) => document.querySelector(s);
@@ -43,7 +43,7 @@ const CT_PRESETS = [['Brain', 40, 80], ['Subdural', 75, 215], ['Stroke', 35, 40]
 const MAX_CACHE_BYTES = 1.4e9;
 
 const app = {
-  tool: 'scroll', mode: '2d', layout: 1,
+  tool: 'cross', mode: '2d', layout: 1, // "Locate" where there are three planes; 2D falls back to Scroll
   studies: [], sources: new Map(), stacks: new Map(),
   views: [], active: null, selected: null,
   smooth: true, hideNames: false, showCross: true,
@@ -107,6 +107,8 @@ const app = {
   },
 };
 window.viewscan = app;
+// can this computer run the AI brain models? (asked once; the panel is refreshed when the answer is in)
+gpuReady().then((ok) => { app.gpuOK = ok; showMethod(); });
 app.api = { openStack: (...a) => openStack(...a), setMode: (m) => setMode(m) }; // for tests and the console
 
 // ------------------------------------------------------------ library ------
@@ -394,6 +396,8 @@ function applyMode() {
   $('#app').className = `mode-${app.mode}`;
   for (const b of document.querySelectorAll('#mode-switch button')) b.classList.toggle('on', b.dataset.mode === app.mode);
   if (app.mode === '3d' && !['scroll', 'wl', 'pan', 'zoom', 'cross', 'length', 'angle', 'roi'].includes(app.tool)) app.tool = 'cross';
+  if (app.mode !== '3d' && app.tool === 'cross') app.tool = 'scroll';
+  else if (app.mode === '3d' && app.tool === 'scroll' && !app.toolPicked) app.tool = 'cross';
   buildViews(); buildToolbar(); markActiveSeries();
 }
 
@@ -482,7 +486,7 @@ function buildToolbar() {
   updateToolbar();
   syncPreset();
 }
-function setTool(id) { app.tool = id; updateToolbar(); }
+function setTool(id) { app.tool = id; app.toolPicked = true; updateToolbar(); }
 function toggleOverlay() {
   app.showOverlay = !app.showOverlay;
   store.set('overlay', app.showOverlay ? '1' : '');
@@ -610,7 +614,7 @@ function setup3DPanel() {
         'Solid inside')));
   }
   $('#bone-row').style.display = isCT ? '' : 'none';
-  $('#mr-more').style.display = isCT ? 'none' : '';
+  showMethod();
   $('#btn-compare').style.display = isCT ? 'none' : '';
   if (!isCT) loadMr(s);
   requestPreview();
@@ -729,6 +733,68 @@ const MR_PRESETS = [
   { key: 'cast', name: 'I just want the overall shape', why: 'Keeps everything inside the outline, with no folds: a smooth cast of the inside of the skull. Quick to print.', set: { folds: -6 } },
 ];
 const MR_INPUTS = ['#m-reach', '#m-stiff', '#m-grow', '#m-bottom', '#m-folds', '#m-split', '#m-hind', '#m-blend', '#m-fluid', '#m-fat'];
+// Which way the MRI brain is found when the choice is "Auto": the AI model where the
+// graphics card can run it and the scan is of a kind it was trained for (T1-like, and
+// FLAIR works too); T2 and proton-density scans, where fluid is bright, go the classic way.
+function autoModel(stack = app.volume?.stack) {
+  if (!app.gpuOK) return 'classic';
+  const kind = stack && stack.series ? scanKind(stack.series) : null;
+  return kind && /T2|PD/.test(kind.name) ? 'classic' : 'partsBig';
+}
+/** The brain finder in use: the dropdown's choice, with "Auto" worked out. */
+function chosenModel(stack = app.volume?.stack) { const v = $('#m-model').value; return v === 'auto' ? autoModel(stack) : v; }
+const AI_DEFAULT = { level: 0, grow: 0, stump: 8 };
+const readAiRaw = () => ({ level: Number($('#a-level').value), grow: Number($('#a-grow').value), stump: Number($('#a-stump').value) });
+const aiFromRaw = (model, a) => ({ model, folds: a.level / 5, grow: a.grow, stump: a.stump });
+function showAi(a) {
+  const out = (id, text) => { $(id).parentElement.querySelector('output').textContent = text; };
+  $('#a-level').value = a.level; $('#a-grow').value = a.grow; $('#a-stump').value = a.stump;
+  out('#a-level', a.level === 0 ? 'normal' : a.level > 0 ? `stricter +${a.level}` : `looser ${a.level}`);
+  out('#a-grow', a.grow === 0 ? 'none' : `${a.grow > 0 ? '+' : ''}${a.grow} mm`);
+  out('#a-stump', a.stump >= 30 ? 'all of it' : `${a.stump} mm`);
+}
+// what each AI model is good for, in a line
+const MODEL_WHY = {
+  partsBig: 'The best one: finds the whole brain, with the cerebellum and brain stem, as 18 parts.',
+  parts: 'A smaller network for the same 18 parts: quicker, a little less exact.',
+  tissue: 'Finds gray and white matter. Good folds, but it can miss parts of a scan with uneven brightness.',
+  tissueFast: 'The lightest network: very quick but rough. It can leave parts out or take in muscle; try “18 parts (best)” if it does.',
+  maskFast: 'The lightest network: very quick but rough. It can leave parts out or take in muscle; try “18 parts (best)” if it does.',
+  mask: 'A mid-size network that marks what is brain. Quick; less complete than “18 parts (best)”.',
+  areas50: 'Divides the brain into 50 named areas (the 3D model shows them as one brain). Leaves out some of the lower parts.',
+  areas104: 'Divides the brain into 104 named areas (the 3D model shows them as one brain). Leaves out some of the lower parts.',
+};
+/** The dropdown, its one-line explanation, and which fine-tune panel belongs to the choice. */
+function showMethod() {
+  const stack = app.volume?.stack, isMR = !!stack && stack.unit !== 'HU';
+  $('#brain-how').style.display = isMR ? '' : 'none';
+  const pick = $('#m-model').value, how = chosenModel(stack), ai = how !== 'classic';
+  $('#m-model').options[0].textContent = ai ? 'Auto (AI model)' : 'Auto (classic)';
+  $('#m-model-why').textContent = ai
+    ? `${MODEL_WHY[how] || ''} It runs on this computer’s graphics card; nothing leaves the computer.`
+    : pick !== 'auto' ? 'An outline is grown inside the skull and the folds are cut by brightness. Works on any kind of scan.'
+      : app.gpuOK ? 'Classic is used for this kind of scan: the AI models were trained on T1-weighted scans. You can still pick one.'
+        : 'The AI models need WebGPU (a current Chrome or Edge with a graphics card); the classic method is used here.';
+  $('#ai-more').style.display = isMR && ai ? '' : 'none';
+  $('#mr-more').style.display = isMR && !ai ? '' : 'none';
+}
+/** A series opens with the finder and AI settings it was last built with (else the owner's usual finder). */
+function loadMethod(stack) {
+  const m = store.get('model.' + stack.id, '') || store.get('model', 'auto');
+  $('#m-model').value = [...$('#m-model').options].some((o) => o.value === m) ? m : 'auto';
+  let a = null;
+  try { a = JSON.parse(store.get('ai.' + stack.id, 'null')); } catch { /* ignore */ }
+  showAi({ ...AI_DEFAULT, ...(a || {}) });
+  showMethod();
+}
+function setMethod(model, a = null, usual = false) {
+  const stack = app.volume?.stack;
+  $('#m-model').value = model;
+  if (stack) store.set('model.' + stack.id, model);
+  if (usual) store.set('model', model);
+  if (a) { showAi({ ...AI_DEFAULT, ...a }); if (stack) store.set('ai.' + stack.id, JSON.stringify(readAiRaw())); }
+  showMethod();
+}
 function readMrRaw() {
   return {
     preset: $('#m-preset').value,
@@ -740,7 +806,8 @@ function readMrRaw() {
 /** The settings in the form the model builder takes them (see segmentMR in segworker.js). */
 function readMr() {
   if (app.mrTune) return app.mrTune; // set from tests / the console to bypass the panel
-  return mrFromRaw(readMrRaw());
+  const model = chosenModel();
+  return model === 'classic' ? { model, ...mrFromRaw(readMrRaw()) } : aiFromRaw(model, readAiRaw());
 }
 function mrFromRaw(r) {
   return {
@@ -776,6 +843,7 @@ function loadMr(stack) {
   $('#m-default').hidden = !mine;
   if (mine) $('#m-default-text').textContent = `You have a default for ${kindName(stack)} scans${saved ? '' : ' (in use)'}.`;
   showMr(r);
+  loadMethod(stack);
   // a series that was tuned by hand opens with its settings in view
   if (Object.keys(MR_DEFAULT).some((k) => r[k] !== MR_DEFAULT[k])) $('#mr-more').open = true;
 }
@@ -799,6 +867,13 @@ function initMr() {
   };
   sel.onchange = () => { const p = MR_PRESETS.find((x) => x.key === sel.value); if (p) keep({ ...MR_DEFAULT, ...p.set, preset: p.key }); };
   for (const id of MR_INPUTS) $(id).addEventListener('input', () => keep({ ...readMrRaw(), preset: 'custom' }));
+  $('#m-model').addEventListener('change', () => { setMethod($('#m-model').value); requestPreview(); });
+  for (const id of ['#a-level', '#a-grow', '#a-stump']) $(id).addEventListener('input', () => { setMethod($('#m-model').value, readAiRaw()); requestPreview(); });
+  $('#a-reset').onclick = () => { setMethod($('#m-model').value, AI_DEFAULT); requestPreview(); };
+  $('#a-live').checked = store.get('ailive', '1') === '1';
+  $('#a-live').onchange = (e) => { store.set('ailive', e.target.checked ? '1' : ''); requestPreview(); };
+  $('#ai-more').addEventListener('toggle', () => requestPreview());
+  showAi(AI_DEFAULT);
   $('#m-reset').onclick = () => keep({ ...MR_DEFAULT });
   $('#m-live').checked = store.get('mrlive', '1') === '1';
   $('#m-live').onchange = (e) => { store.set('mrlive', e.target.checked ? '1' : ''); requestPreview(); };
@@ -811,12 +886,14 @@ function initMr() {
 // panel asks it where the brain is now, and the answer is tinted on the slices
 // (pink = brain, blue = fluid inside the outline). No 3D model is built.
 const preview = { worker: null, volId: '', busy: false, want: false, seq: 0, vol: null };
-const previewOn = () => app.mode === '3d' && !!app.volume && app.volume.stack.unit !== 'HU' && $('#mr-more').open && $('#m-live').checked;
+const pvStatus = (text) => { for (const id of ['#m-status', '#a-status']) $(id).textContent = text; };
+const previewOn = () => app.mode === '3d' && !!app.volume && app.volume.stack.unit !== 'HU'
+  && (chosenModel() === 'classic' ? $('#mr-more').open && $('#m-live').checked : $('#ai-more').open && $('#a-live').checked);
 function requestPreview() {
   const stack = app.volume?.stack;
   if (!previewOn()) {
     if (stack && stack.preview) { stack.preview = null; app.redrawAll(); }
-    $('#m-status').textContent = '';
+    pvStatus('');
     return;
   }
   preview.want = true;
@@ -836,24 +913,41 @@ function pumpPreview() {
         st.preview = { labels: labelVolume(m.labels, m.dims, m.grid) };
         st.mrUsed = m.used || st.mrUsed;
         showMr(readMrRaw());
-        $('#m-status').textContent = m.used ? `Brain: about ${Math.round(m.ml / 10) * 10} mL${m.note ? '. ' + m.note : ''}` : m.note;
+        pvStatus(m.used ? `Brain: about ${Math.round(m.ml / 10) * 10} mL${m.note ? '. ' + m.note : ''}` : m.note);
         app.previewCount = (app.previewCount || 0) + 1;
         app.redrawAll();
       } else if (m.type === 'error') {
         console.warn(m.error);
-        $('#m-status').textContent = 'The preview could not be worked out for this series.';
+        pvStatus('The preview could not be worked out for this series.');
         preview.worker.terminate(); preview.worker = null; preview.volId = '';
       }
       pumpPreview();
     };
   }
+  const mr = readMr();
+  preview.busy = true;
+  // an AI model answers first (once per scan; the answer is kept), then its result is laid on the slices
+  if (mr.model !== 'classic') {
+    pvStatus('Running the brain model on the graphics card…');
+    brainModel(vol, mr.model, (p, text) => { if (app.volume === vol) pvStatus(text); })
+      .then((ai) => { if (app.volume !== vol) { preview.busy = false; return pumpPreview(); } sendPreview(vol, stack, mr, ai); })
+      .catch((err) => { preview.busy = false; pvStatus(`The AI model could not run (${err.message}). Pick “Classic” under “Brain finder”.`); });
+    return;
+  }
+  sendPreview(vol, stack, mr, null);
+}
+function sendPreview(vol, stack, mr, ai) {
   const first = preview.volId !== vol.id;
-  preview.busy = true; preview.vol = vol; preview.volId = vol.id;
-  $('#m-status').textContent = first ? 'Looking for the brain…' : 'Updating…';
+  preview.vol = vol; preview.volId = vol.id;
+  if (first) preview.aiKey = '';
+  const sendAi = ai && preview.aiKey !== ai.key;
+  if (sendAi) preview.aiKey = ai.key;
+  pvStatus(first ? 'Looking for the brain…' : 'Updating…');
   preview.worker.postMessage({
     type: 'preview', id: ++preview.seq,
     vol: first ? { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz, basis: vol.basis } : null,
-    opts: { voxel: 2, modality: 'MR', mr: readMr(), mrInfo: { tr: stack.series.info.tr, te: stack.series.info.te, ti: stack.series.info.ti } },
+    ai: sendAi ? { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key } : null,
+    opts: { voxel: 2, modality: 'MR', mr, mrInfo: { tr: stack.series.info.tr, te: stack.series.info.te, ti: stack.series.info.ti } },
   });
 }
 
@@ -984,7 +1078,7 @@ const CMP_FINISH = {
 // Spread wide on purpose: each version differs from the others in kind (finish,
 // grid, how deep the folds go, how the outline sits), not by one notch of one slider.
 const MR_VARIANTS = [
-  { label: 'Automatic', set: {} },
+  { label: 'Classic, automatic', set: {} },
   { label: 'Fine grid, crisp, tight outline, deep split', set: { reach: -2, stiff: 2, split: 4 }, finish: 'crisp', voxel: 0.7 }, // the owner's favorite
   { label: 'Fine grid, smooth, deepest folds', set: { reach: -1, folds: 5 }, finish: 'smooth', voxel: 0.7 },
   { label: 'Fine grid, crisp, deepest folds', set: { folds: 5 }, finish: 'crisp', voxel: 0.7 },
@@ -1014,10 +1108,59 @@ const MR_VARIANTS = [
   { label: 'Overall shape only', set: { folds: -6 }, finish: 'smooth' },
 ];
 const cmp = { run: 0, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0, cam: null, radius: 100, vol: null, fit: 1, t0: 0 };
-const variantKey = (v) => JSON.stringify([Object.entries({ ...MR_DEFAULT, ...v.set, preset: '' }).sort(), v.finish || 'clean', v.voxel || 0]);
+// AI versions: every network, each with mixes of its own settings (how sure it must
+// be, pad or shave, how much brain stem) and of finish and grid.
+const MODEL_SHORT = { partsBig: '18 parts (best)', parts: '18 parts (quicker)', tissue: 'Tissue GWM', tissueFast: 'Tissue GWM (light)', maskFast: 'Brain mask (fast)', mask: 'Brain mask (high accuracy)', areas50: 'Aparc+Aseg 50', areas104: 'Aparc+Aseg 104' };
+function aiVariant(model, ai = {}, finish = 'crisp', voxel = 0) {
+  const tags = [MODEL_SHORT[model]];
+  if (ai.level) tags.push(ai.level > 0 ? `stricter +${ai.level}` : `looser ${ai.level}`);
+  if (ai.grow) tags.push(ai.grow > 0 ? `padded ${ai.grow} mm` : `shaved ${-ai.grow} mm`);
+  if (ai.stump !== undefined && ai.stump !== AI_DEFAULT.stump) tags.push(ai.stump >= 30 ? 'whole brain stem' : `brain stem ${ai.stump} mm`);
+  if (voxel) tags.push(voxel < 1 ? 'fine grid' : 'coarse grid');
+  tags.push(finish);
+  const v = { label: tags.join(' · '), model, ai, set: {}, finish };
+  if (voxel) v.voxel = voxel;
+  return v;
+}
+const AI_VARIANTS = [
+  aiVariant('partsBig', {}, 'crisp', 0.7), aiVariant('partsBig', {}, 'clean'), aiVariant('partsBig', {}, 'smooth', 0.7), aiVariant('partsBig', {}, 'raw'),
+  aiVariant('partsBig', { level: 1 }, 'crisp', 0.7), aiVariant('partsBig', { level: 2 }, 'crisp', 0.7), aiVariant('partsBig', { level: 3 }, 'crisp', 0.7), aiVariant('partsBig', { level: 4 }, 'crisp', 0.7),
+  aiVariant('partsBig', { level: 5 }, 'crisp', 0.7), aiVariant('partsBig', { level: 2 }, 'smooth', 0.7), aiVariant('partsBig', { level: 3 }, 'clean'), aiVariant('partsBig', { level: 4 }, 'smooth', 0.7),
+  aiVariant('partsBig', { level: 2 }, 'raw', 0.7), aiVariant('partsBig', { level: -2 }, 'crisp', 0.7), aiVariant('partsBig', { level: -4 }, 'smooth'), aiVariant('partsBig', {}, 'xsmooth'),
+  aiVariant('partsBig', { grow: -0.5 }, 'crisp', 0.7), aiVariant('partsBig', { grow: 0.5 }, 'crisp', 0.7), aiVariant('partsBig', { level: 3, grow: 0.5 }, 'crisp', 0.7), aiVariant('partsBig', { stump: 30 }, 'crisp'),
+  aiVariant('partsBig', { stump: 0 }, 'crisp'), aiVariant('partsBig', { level: 2 }, 'crisp', 1.4),
+  aiVariant('parts', {}, 'crisp', 0.7), aiVariant('parts', { level: 2 }, 'crisp', 0.7), aiVariant('parts', { level: 4 }, 'crisp', 0.7), aiVariant('parts', {}, 'smooth', 0.7),
+  aiVariant('tissue', {}, 'crisp', 0.7), aiVariant('tissue', { level: 2 }, 'crisp', 0.7), aiVariant('tissue', {}, 'smooth', 0.7), aiVariant('tissue', { level: -2 }, 'clean'),
+  aiVariant('tissueFast', {}, 'crisp'), aiVariant('tissueFast', { level: 2 }, 'crisp', 0.7), aiVariant('maskFast', {}, 'crisp'), aiVariant('maskFast', {}, 'smooth'),
+  aiVariant('mask', {}, 'crisp', 0.7), aiVariant('mask', { level: 2 }, 'crisp', 0.7), aiVariant('mask', {}, 'smooth'),
+  aiVariant('areas50', {}, 'crisp', 0.7), aiVariant('areas50', { level: 2 }, 'crisp', 0.7), aiVariant('areas104', {}, 'crisp', 0.7), aiVariant('areas104', { level: 2 }, 'crisp', 0.7), aiVariant('areas104', {}, 'smooth'),
+];
+/** AI versions with mixes not tried on this series yet. */
+function freshAiVariants(stack, count) {
+  const tried = stack.triedVariants || (stack.triedVariants = new Set());
+  const pick = (list) => list[Math.floor(Math.random() * list.length)];
+  const out = [];
+  for (let guard = 0; out.length < count && guard < 4000; guard++) {
+    const ai = {}, level = pick([-3, -1, 0, 1, 2, 2, 3, 3, 4, 5]), grow = pick([0, 0, 0, 0, -1, -0.5, 0.5, 1]), stump = pick([8, 8, 8, 8, 0, 16, 30]);
+    if (level) ai.level = level; if (grow) ai.grow = grow; if (stump !== AI_DEFAULT.stump) ai.stump = stump;
+    const v = aiVariant(pick(['partsBig', 'partsBig', 'partsBig', 'partsBig', 'parts', 'parts', 'tissue', 'tissue', 'mask', 'tissueFast', 'areas50', 'areas104']), ai, pick(['crisp', 'crisp', 'raw', 'clean', 'smooth', 'xsmooth']), pick([0, 0.7, 0.7, 0.7, 1.4]));
+    const key = variantKey(v);
+    if (tried.has(key)) continue;
+    tried.add(key);
+    out.push(v);
+  }
+  return out;
+}
+const variantKey = (v) => JSON.stringify([v.model || 'classic', v.ai || 0, Object.entries({ ...MR_DEFAULT, ...v.set, preset: '' }).sort(), v.finish || 'clean', v.voxel || 0]);
 /** What a version changes, in plain words. */
 function variantWhy(v) {
   const s = v.set, bits = [];
+  if (v.model === 'parts') bits.push('the smaller neural network'); else if (v.model === 'tissue') bits.push('the network that only knows gray and white matter');
+  else if (v.model === 'partsBig') bits.push('neural network on the graphics card');
+  else if (!v.model && !Object.keys(s).length) bits.push('classic method: outline, and folds by brightness');
+  if (v.ai && v.ai.level) bits.push(v.ai.level > 0 ? 'it must be surer that a spot is brain, which opens the folds' : 'it may be less sure that a spot is brain, which fills the folds in');
+  if (v.ai && v.ai.grow) bits.push(v.ai.grow > 0 ? `padded ${v.ai.grow} mm all round` : `shaved ${-v.ai.grow} mm all round`);
+  if (v.ai && v.ai.stump !== undefined) bits.push(v.ai.stump >= 30 ? 'all of the brain stem the model found is kept' : `${v.ai.stump} mm of brain stem kept below the cerebellum`);
   if (s.reach > 0) bits.push('the outline reaches further out'); else if (s.reach < 0) bits.push('the outline is pulled in');
   if (s.stiff > 0) bits.push('a stiffer outline that cannot bulge'); else if (s.stiff < 0) bits.push('a looser outline that follows the lobes');
   if (s.grow > 0) bits.push(`padded ${s.grow} mm all round`); else if (s.grow < 0) bits.push(`shaved ${-s.grow} mm all round`);
@@ -1109,7 +1252,8 @@ function chooseCompare(tile, asDefault) {
   const vol = cmp.vol, stack = vol.stack, v = tile.variant;
   const preset = MR_PRESETS.find((p) => JSON.stringify(Object.entries(p.set).sort()) === JSON.stringify(Object.entries(v.set).sort()));
   const raw = { ...MR_DEFAULT, ...v.set, preset: preset ? preset.key : 'custom' };
-  if (asDefault) store.set(kindKey(stack), JSON.stringify(raw));
+  const how = v.model || 'classic';
+  if (asDefault && how === 'classic') store.set(kindKey(stack), JSON.stringify(raw));
   // the finish and the grid are part of the look, so the panel takes them over too
   const fin = CMP_FINISH[v.finish || 'clean'];
   $('#seg-finish').value = fin.name;
@@ -1124,7 +1268,8 @@ function chooseCompare(tile, asDefault) {
   stack.preview = null;
   closeCompare(tile);
   if (app.volume === vol) {
-    applyMr(raw, false);
+    setMethod(how, v.ai || AI_DEFAULT, asDefault);
+    if (how === 'classic') applyMr(raw, false);
     renderModels();
     setR3('show', 'models');
   } else store.set('mr.' + stack.id, JSON.stringify(raw));
@@ -1137,17 +1282,20 @@ function addCompare(variants) {
   let first = null;
   for (const variant of variants) {
     tried.add(variantKey(variant));
+    const sec = cmp.sec[variant.model ? 'ai' : 'classic'];
     const canvas = h('canvas', {}), status = h('div', { class: 'cmp-status' }, 'Waiting…'), why = variantWhy(variant);
     const tile = { variant, canvas, ctx: canvas.getContext('2d'), status, item: null, result: null };
     const use = h('button', { class: 'btn primary', disabled: '', onclick: () => chooseCompare(tile, false) }, 'Use this one');
     const def = h('button', { class: 'btn', disabled: '', title: `Use it here, and start every ${name} scan with these settings from now on. “Back to automatic” in the fine-tuning panel undoes it for one series; “Forget my default” removes it.`, onclick: () => chooseCompare(tile, true) }, `Use, and make my default for ${name} scans`);
     tile.buttons = [use, def];
     tile.el = h('div', { class: 'cmp-tile' }, h('div', { class: 'cmp-view' }, canvas, status), h('div', { class: 'cmp-name', title: variant.label }, variant.label), h('div', { class: 'cmp-why', title: why }, why), h('div', { class: 'cmp-actions' }, use, def));
-    grid.append(tile.el);
+    sec.grid.append(tile.el);
+    sec.count++;
     cmp.tiles.push(tile); cmp.queue.push(tile);
     first = first || tile;
   }
   $('#cmp-title').textContent = `${stack.title}: ${cmp.tiles.length} ways to build the brain`;
+  for (const s of Object.values(cmp.sec)) s.head.querySelector('small').textContent = s.count ? `${s.count} versions` : s.none;
   // How many to build at once. The machine's cores are shared out: every build gets
   // a few threads of its own (a fine-grid build twice as many), and builds are
   // started while threads are free. Many small builds side by side finish sooner
@@ -1171,7 +1319,8 @@ function addCompare(variants) {
     const v = tile.variant;
     tile.status.textContent = 'Building…';
     try {
-      const opts = buildOptions(stack, ['brain'], mrFromRaw({ ...MR_DEFAULT, ...v.set }));
+      const how = v.model === 'auto' ? autoModel(stack) : v.model || 'classic';
+      const opts = buildOptions(stack, ['brain'], how === 'classic' ? { model: how, ...mrFromRaw({ ...MR_DEFAULT, ...v.set }) } : aiFromRaw(how, { ...AI_DEFAULT, ...(v.ai || {}) }));
       opts.finish = { ...CMP_FINISH[v.finish || 'clean'].values };
       if (v.voxel) opts.voxel = v.voxel;
       // a build that never answers (its worker died without a word) must not hold up the rest
@@ -1229,14 +1378,29 @@ function openCompare() {
   cmp.run++;
   Object.assign(cmp, { vol, cam: null, fit: 1, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0 });
   $('#compare').hidden = false;
-  $('#cmp-grid').textContent = '';
-  addCompare(MR_VARIANTS);
+  // two groups, each with its own heading: what the AI models make, and what the classic method makes
+  const grid = $('#cmp-grid');
+  grid.textContent = '';
+  // each group folds away with a click on its heading
+  const section = (title, none) => {
+    const s = { head: h('summary', { title: 'Click to fold this group away or bring it back' }, title, h('small', {}, '')), grid: h('div', { class: 'cmp-sec' }), count: 0, none };
+    const box = h('details', { class: 'cmp-group', open: '' }, s.head, s.grid);
+    box.addEventListener('toggle', () => drawCompare());
+    grid.append(box);
+    return s;
+  };
+  cmp.sec = {
+    ai: section('AI models', app.gpuOK ? '' : 'not available here: they need WebGPU (a current Chrome or Edge with a graphics card)'),
+    classic: section('Classic method (outline and folds)', ''),
+  };
+  addCompare(app.gpuOK ? [...AI_VARIANTS, ...MR_VARIANTS] : MR_VARIANTS);
 }
 function initCompare() {
   $('#btn-compare').onclick = openCompare;
   $('#cmp-close').onclick = () => closeCompare();
   $('#cmp-more').onclick = () => {
-    const more = freshVariants(cmp.vol.stack, 12);
+    const more = app.gpuOK ? [...freshAiVariants(cmp.vol.stack, 15), ...freshVariants(cmp.vol.stack, 15)] : freshVariants(cmp.vol.stack, 30);
+    for (const s of Object.values(cmp.sec)) s.grid.parentElement.open = true;
     if (!more.length) return toast('Every combination has been tried on this series.');
     const first = addCompare(more);
     if (first) first.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1275,6 +1439,12 @@ function settingsText() {
   lines.push(`Finish: ${sel("#seg-finish")} (smoothing ${f.smooth}, soften edges ${f.soften}, close gaps ${f.close}, remove thin bits ${f.open}, floating pieces: ${sel("#f-pieces")}, triangles: ${sel("#f-reduce")}, fill hollow spaces: ${f.fill ? "on" : "off"})`);
   if (stack && stack.unit === "HU") lines.push(`Bone starts at: ${$("#seg-bone").value} HU`);
   else {
+    lines.push(`Brain finder: ${sel("#m-model")}`);
+    if (chosenModel() !== "classic") {
+      lines.push(`AI model: how sure it must be: ${outOf("#a-level")}; pad or shave: ${outOf("#a-grow")}; brain stem kept: ${outOf("#a-stump")}`);
+      lines.push(`Raw: ${JSON.stringify({ voxel: Number($("#seg-detail").value), finish: f, model: chosenModel(), ai: readAiRaw() })}`);
+      return lines.join(String.fromCharCode(10));
+    }
     lines.push(`What looks wrong: ${sel("#m-preset")}`);
     lines.push(`Outline: ${outOf("#m-reach")}; stiffness: ${outOf("#m-stiff")}; pad or shave: ${outOf("#m-grow")}; cut off below: ${outOf("#m-bottom")}`);
     lines.push(`Fold depth: ${outOf("#m-folds")}; split the halves: ${outOf("#m-split")}; cerebellum and brain stem smooth: ${$("#m-hind").checked ? "on" : "off"}`);
@@ -1326,7 +1496,7 @@ async function build() {
       }),
     };
     stack.preview = null; preview.want = false; // the slices now show the finished models
-    $('#m-status').textContent = '';
+    pvStatus('');
     app.lastUsed = result.used || null;
     if (result.used) { stack.mrUsed = result.used; if (app.volume && app.volume.stack === stack) showMr(readMrRaw()); }
     app.lastBuild = { seconds: result.seconds, ...result.timing, parts: Object.fromEntries(result.items.map((i) => [i.key, i.seconds])) };
