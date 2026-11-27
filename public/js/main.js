@@ -666,12 +666,21 @@ function renderModels() {
         h('input', { type: 'color', value: hex(it.color), title: 'Color', oninput: (e) => { it.color = unhex(e.target.value); app.redrawAll(); } }),
         it.name),
       h('div', { class: 'stats' }, stats + (it.mesh ? tag : '')),
+      it.how && h('div', { class: 'how ' + it.how.kind, title: it.how.title }, h('b', {}, it.how.kind === 'own' ? 'Home-trained model' : it.how.kind === 'ai' ? 'AI model' : 'Classic method'), it.how.text),
       it.mesh && it.note && h('div', { class: 'note' }, it.note),
       it.mesh && h('div', { class: 'acts' },
         h('input', { type: 'range', min: 5, max: 100, value: Math.round(it.opacity * 100), title: 'See-through', oninput: (e) => { it.opacity = e.target.value / 100; app.redrawAll(); } }),
         h('button', { class: 'btn', title: 'Save as STL (for 3D printing), in millimeters', onclick: () => saveModel(it, 'stl') }, 'STL'),
         h('button', { class: 'btn', title: 'Save as OBJ', onclick: () => saveModel(it, 'obj') }, 'OBJ'))));
   }
+}
+/** Which brain finder made a brain model: shown under it, so a good result can be traced back. */
+function foundBy(used) {
+  const key = used && used.model;
+  if (!key) return { kind: 'classic', text: 'outline and folds', title: 'The classic method found this brain.' };
+  const name = (MODEL_SHORT[key] || key).replace(/^Home-trained: /, '');
+  const many = used.series > 1 ? ` · ${used.series} series of this study` : '';
+  return { kind: OWN[key] ? 'own' : 'ai', text: name + many, title: MODEL_WHY[key] || '' };
 }
 function saveModel(it, kind) {
   const s = app.volume.stack;
@@ -1309,7 +1318,7 @@ function chooseCompare(tile, asDefault) {
   const prev = stack.models;
   if (prev) for (const it of prev.items) if (it.mesh) app.gl.freeMesh(it.mesh);
   const t = TARGETS.find((x) => x.key === 'brain');
-  stack.models = { labels: tile.result.labels, items: [{ ...tile.item, name: t.name, color: [...t.color], opacity: t.opacity, visible: true }] };
+  stack.models = { labels: tile.result.labels, items: [{ ...tile.item, name: t.name, color: [...t.color], opacity: t.opacity, visible: true, how: stack.unit === 'HU' ? null : foundBy(tile.result.used) }] };
   stack.mrUsed = tile.result.used || stack.mrUsed;
   stack.preview = null;
   closeCompare(tile);
@@ -1541,7 +1550,7 @@ async function build() {
       labels: result.labels,
       items: result.items.map((it) => {
         const t = TARGETS.find((x) => x.key === it.key), o = old.get(it.key);
-        return { ...it, name: t.name, color: o ? o.color : [...t.color], opacity: o ? o.opacity : t.opacity, visible: true };
+        return { ...it, name: t.name, color: o ? o.color : [...t.color], opacity: o ? o.opacity : t.opacity, visible: true, how: it.key === 'brain' && opts.modality === 'MR' ? foundBy(result.used) : null };
       }),
     };
     stack.preview = null; preview.want = false; // the slices now show the finished models

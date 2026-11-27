@@ -206,3 +206,10 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); cur
 .target .pick { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; cursor: pointer; }
 .target .solid { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--dim); white-space: nowrap; cursor: pointer; border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px 2px 5px; }
 .target .solid:has(input:checked) { color: #04211d; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+
+/* which brain finder made a model */
+.model .how { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; padding: 2px 8px; border-radius: 999px; margin: 1px 0 4px; border: 1px solid; }
+.model .how b { font-weight: 600; }
+.model .how.own { color: #6ee7b7; border-color: #0f766e; background: rgba(16, 185, 129, .12); }
+.model .how.ai { color: #93c5fd; border-color: #1d4ed8; background: rgba(59, 130, 246, .12); }
+.model .how.classic { color: #fcd34d; border-color: #92400e; background: rgba(245, 158, 11, .1); }

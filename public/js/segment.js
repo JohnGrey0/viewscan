@@ -219,7 +219,7 @@ export function buildModels(vol, optsIn, onProgress) {
       labels: labelVolume(labels, seg.dims, seg.grid),
       items: results.map((r) => r.item).sort((a, b) => a.bit - b.bit),
       notes: seg.notes,
-      used: seg.used,
+      used: seg.used && { ...seg.used, series: ai && ai.study ? ai.study.used : 1 },
       seconds: (performance.now() - t0) / 1000,
       timing: { findParts: (tSeg - t0) / 1000, buildParts: (performance.now() - tSeg) / 1000, threads: pool.length + 1 },
     };
