@@ -226,3 +226,14 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   adds the rest of `AI_VARIANTS` + `MR_VARIANTS`; "Try 30 more" adds random untried mixes.
   Never put "whole study" averaging in the best set: it blurred the folds on his scout.
   `test/ai.py` was updated for this but not re-run that day (the graphics card was training).
+- Wrap-around repair (`Volume.unwrap` in `volume.js`, `display.unwrap`, `#unwrap`, pref `unwrap`,
+  on by default; `node test/unwrap.mjs`): on the owner's head scout the tip of the nose was
+  drawn behind the head (the measured box was too short front to back). MRI only. Per direction:
+  tissue must reach both ends (a blank plane or two at the edge allowed), there must be an empty
+  gap inside, and a small piece (under 25% of the tissue) on one side of it. Then a copy of the
+  data is rotated so the cut falls in the gap, and the origin moves so the head stays put. It
+  triggered on that scout only (34 mm) out of 24 series of two clinical studies and the sample.
+  The 2D pictures are not changed. Every consumer of a `Volume` (slice views, models, AI models,
+  study partners) sees the repaired scan; the trainer does not do this. Hand-made marks are tied
+  to one layout: `loadFix` drops marks whose saved origin differs.
+- The owner's good result on the scout (2026-11-27): scout model, fine grid, crisp, padded 1 mm.

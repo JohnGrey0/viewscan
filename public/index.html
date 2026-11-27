@@ -77,6 +77,8 @@
         <label class="row" id="r3-iso-row"><span>Surface level</span><input type="range" id="r3-iso"><output id="r3-iso-out"></output></label>
         <div class="chips" id="r3-presets"></div>
       </div>
+      <label class="check" id="unwrap-row" title="On some MRI scans a part that stuck out of the measured box (often the tip of the nose on a quick overview scan) is drawn on the opposite side, floating behind the head. This moves it back where it belongs. Untick it if a scan looks wrong with it."><input type="checkbox" id="unwrap" checked> Put wrapped-around parts back in place</label>
+      <p class="hint" id="unwrap-note" hidden></p>
       <div class="chips" id="r3-look">
         <button data-v="A" title="From the front">Front</button><button data-v="P">Back</button><button data-v="L">Left</button>
         <button data-v="R">Right</button><button data-v="S">Top</button><button data-v="I">Bottom</button>

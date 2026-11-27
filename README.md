@@ -218,6 +218,14 @@ follows the network's answer closely: in `test/ai.py` 99.7% of the mesh points l
 on the surface the network found. A network takes about 3 to 8 seconds on a
 recent graphics card, once per series; other settings then reuse its answer.
 
+## Wrapped-around parts
+
+On some MRI scans (often a quick overview scan) a part that stuck out of the measured box,
+such as the tip of the nose, is drawn on the opposite side, floating behind the head. In
+"3D & models" Viewscan moves it back where it belongs and says so under **Put wrapped-around
+parts back in place**. Untick that if a scan looks wrong with it. The "2D images" always show
+the scan as it was made.
+
 ## Left and right on the pictures
 
 Hospitals draw top-down and front pictures as if facing the patient, so the patient's left
