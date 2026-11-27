@@ -24,6 +24,7 @@ Node server (`server.js`) and vanilla ES modules in `public/`. No build step.
 | `public/js/views.js` | `StackView` (2D), `SliceView` (MPR), `View3D`, measurements |
 | `public/js/segworker.js`, `segment.js` | segmentation + Surface Nets + Taubin + quadric simplify, STL/OBJ export. `segment.js` runs stage 1 (`segment`) in one worker, then one `part` worker per model |
 | `public/js/seglines.js`, `seghelper.js` | EDT / blur line kernels and the helper threads that run them on SharedArrayBuffer (needs `crossOriginIsolated`; serial fallback otherwise) |
+| `public/js/fixes.js` | marks made by hand on the slices ("Fix brain"): brush, draw-around, undo, saving |
 | `public/js/localstore.js` | IndexedDB copy of folders opened in the browser (`folders` + `files` stores), so they survive a reload |
 | `public/js/main.js` | app shell and UI wiring; `window.viewscan` is the app object (used by tests) |
 
@@ -188,3 +189,16 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   once would each hold over a gigabyte on one card. Without WebGPU the compare grid
   shows the classic group only.
 - "Locate" is the default mouse tool in 3D (the owner asked); 2D falls back to Scroll.
+- "Fix brain" (`fixes.js`, tool `fix` in 3D mode, `#fix-panel`, `fixPaint`/`fixEnd` on the app,
+  `applyFix` in `segworker.js`, `test/fix.py`): the owner paints "this is brain" / "not brain"
+  on the three slice views where a model is wrong and rebuilds. Marks live on the scan's own
+  grid (one byte per scan voxel: 0 none, 1 brain, 2 not brain), so a mark on a thick slice
+  covers that slice; the slice shader draws them from a third texture (`setFix`), green and
+  orange. In a build they win over any brain finder: `applyFix` writes them into the brain
+  mask and into the field the surface is traced from, after the finder and before cleaning
+  (a painted blob that is not attached to the brain is still dropped by "main piece only").
+  The live MRI preview ignores them. Saving: `PUT /api/fix/<stack id>` writes
+  `CACHE_DIR/fixes/<id>.json` (the grid's origin and steps plus the marks, gzip in base64, no
+  names); it is the only thing the server writes on the page's behalf, and never into a scan
+  folder. Without a server the marks stay in localStorage (`viewscan.fix.<id>`). The trainer
+  can read these files as hand-checked labels. `T` hides marks and colors together.

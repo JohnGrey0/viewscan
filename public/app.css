@@ -213,3 +213,11 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); cur
 .model .how.own { color: #6ee7b7; border-color: #0f766e; background: rgba(16, 185, 129, .12); }
 .model .how.ai { color: #93c5fd; border-color: #1d4ed8; background: rgba(59, 130, 246, .12); }
 .model .how.classic { color: #fcd34d; border-color: #92400e; background: rgba(245, 158, 11, .1); }
+#fix-panel { background: linear-gradient(180deg, rgba(16, 185, 129, .1), transparent 70%); }
+#fix-panel .seg { margin-bottom: 6px; }
+#fix-mode button[data-v="1"].on { background: #15803d; }
+#fix-mode button[data-v="2"].on { background: #c2410c; }
+#fix-mode button[data-v="0"].on { background: #475569; }
+#fix-status { margin: 8px 0 0; }
+#fix-status.todo { color: #fcd34d; }
+#app.tool-fix .view-slice { cursor: crosshair; }

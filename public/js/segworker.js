@@ -1473,6 +1473,42 @@ function segmentMR(grid, opts, want, report) {
 
 // Clean, optionally fill, and mesh one part. Runs in its own worker so the
 // parts are built side by side on separate processor cores.
+// Marks made by hand on the slices (opts.fix, see fixes.js: one value per scan voxel,
+// 1 = brain, 2 = not brain) win over whatever found the brain. They are put on the
+// working grid and written into the brain mask and into the field its surface is
+// traced from. A mark on a thick slice covers the whole slice.
+function applyFix(grid, vol, fix, seg) {
+  const brain = seg.masks.brain;
+  if (!brain || !fix || !fix.data) return 0;
+  const { origin, dx, dy, dz, nx, ny, nz } = vol, e = grid.e, w0 = grid.w0;
+  const cr = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const d3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const r0 = cr(dy, dz), r1 = cr(dz, dx), r2 = cr(dx, dy), det = d3(dx, r0);
+  const rows = [r0, r1, r2].map((r) => r.map((v) => v / det)); // world -> scan index
+  const rel = [w0[0] - origin[0], w0[1] - origin[1], w0[2] - origin[2]];
+  const base = rows.map((r) => d3(r, rel)), st = [0, 1, 2].map((g) => rows.map((r) => d3(r, e[g]) * VOX)); // scan-index step per grid step
+  const mark = new Uint8Array(N), data = fix.data;
+  let n = 0;
+  for (let z = 0, o = 0; z < Z; z++) for (let y = 0; y < Y; y++) {
+    const bi = base[0] + y * st[1][0] + z * st[2][0], bj = base[1] + y * st[1][1] + z * st[2][1], bk = base[2] + y * st[1][2] + z * st[2][2];
+    for (let x = 0; x < X; x++, o++) {
+      const i = Math.round(bi + x * st[0][0]), j = Math.round(bj + x * st[0][1]), k = Math.round(bk + x * st[0][2]);
+      if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) continue;
+      const m = data[(k * ny + j) * nx + i];
+      if (m === 1) { brain[o] = 1; mark[o] = 1; n++; } else if (m === 2) { brain[o] = 0; mark[o] = 2; n++; }
+    }
+  }
+  const s = seg.surfaces.brain;
+  if (n && s) {
+    const f = Float32Array.from(s.field), sign = s.sign ?? 1, inside = s.level + sign * s.width, outside = s.level - sign * s.width;
+    const added = new Uint8Array(N);
+    for (let o = 0; o < N; o++) if (mark[o] === 1) { f[o] = inside; added[o] = 1; } else if (mark[o] === 2) f[o] = outside;
+    s.field = f;
+    if (s.within) { const near = dilate(added, VOX * 1.01), within = Uint8Array.from(s.within); for (let o = 0; o < N; o++) if (near[o]) within[o] = 1; s.within = within; }
+  }
+  return n;
+}
+
 function buildPart(job) {
   const { key, bit, opts, grid, note } = job;
   let mask = job.mask;
@@ -1538,12 +1574,13 @@ self.onmessage = (ev) => {
       const grid = resample(vol, opts.voxel);
       const want = Object.fromEntries(opts.targets.map((k) => [k, true]));
       const seg = opts.modality === 'CT' ? segmentCT(grid, opts, want, post) : segmentMR(grid, opts, want, post);
+      const fixed = opts.fix ? applyFix(grid, vol, opts.fix, seg) : 0;
       const parts = opts.targets.map((key, bit) => {
         let surface = seg.surfaces[key] || null;
         if (!surface && key === 'bone' && opts.modality === 'CT') surface = { field: grid.field, level: opts.boneHU, width: 1600 };
         return { key, bit, mask: seg.masks[key] || null, surface, note: seg.notes[key] || '' };
       });
-      self.postMessage({ type: 'segmented', dims: { X, Y, Z, VOX }, grid: { e: grid.e, w0: grid.w0, zAxis: grid.zAxis }, parts, notes: seg.notes, used: seg.used || null, extra: opts.lab ? seg.outline : undefined, field: opts.lab ? seg.fine : undefined });
+      self.postMessage({ type: 'segmented', fixed, dims: { X, Y, Z, VOX }, grid: { e: grid.e, w0: grid.w0, zAxis: grid.zAxis }, parts, notes: seg.notes, used: seg.used || null, extra: opts.lab ? seg.outline : undefined, field: opts.lab ? seg.fine : undefined });
     } else if (m.type === 'preview') {
       // Live preview while fine-tuning the MRI brain: this worker stays alive and
       // keeps the scan (on a coarse grid) and every step it has already worked out,

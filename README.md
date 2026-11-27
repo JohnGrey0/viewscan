@@ -218,6 +218,24 @@ follows the network's answer closely: in `test/ai.py` 99.7% of the mesh points l
 on the surface the network found. A network takes about 3 to 8 seconds on a
 recent graphics card, once per series; other settings then reuse its answer.
 
+## Fix the brain by hand
+
+When a brain model has a filled-in fold, a bit of skull or membrane stuck to it, or a piece
+missing, you can correct it yourself. In "3D & models", click **Fix brain** (or press F) and
+paint on any of the three slice pictures:
+
+- **This is brain** (green) where brain is missing, **Not brain** (orange) where something
+  else was colored in, **Rub out** to take your own marks away.
+- **Brush** paints with a round brush (keys [ and ] change its size); **Draw around** marks
+  everything inside a line you draw.
+- The mouse wheel moves through the slices, **T** turns the colors off and on so you can see
+  the scan underneath, Ctrl+Z takes back the last stroke.
+- **Update the 3D model** builds the models again with your marks, whichever brain finder
+  is chosen.
+
+Marks are saved on this computer next to the app's index (never in the scan folder) and
+come back when you open the series again.
+
 ## Tests
 
 ```
