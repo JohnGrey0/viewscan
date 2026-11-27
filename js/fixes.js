@@ -133,6 +133,7 @@ export async function loadFix(stack, vol) {
   if (!saved) { try { saved = JSON.parse(localStorage.getItem('viewscan.fix.' + fileId(stack)) || 'null'); } catch { saved = null; } }
   if (!saved || !saved.gz || !Array.isArray(saved.dims)) return null;
   if (saved.dims[0] !== vol.nx || saved.dims[1] !== vol.ny || saved.dims[2] !== vol.nz) return null; // marks of another grid
+  if (Array.isArray(saved.origin) && saved.origin.some((v, i) => Math.abs(v - vol.origin[i]) > 0.01)) return null; // made with wrap-around handled the other way
   const data = await pipe(fromBase64(saved.gz), new DecompressionStream('gzip'));
   if (data.length !== vol.nx * vol.ny * vol.nz) return null;
   const fix = newFix(vol);

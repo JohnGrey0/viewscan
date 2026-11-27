@@ -23,7 +23,7 @@ const AXES = { SAG: [1, 0, 0], COR: [0, 1, 0], AX: [0, 0, 1] };
 // preferred screen-right / screen-down directions per anatomical view
 // How pictures are laid out. Hospitals draw top-down and front pictures with the patient's left on the
 // right of the screen (as if facing the patient); leftOnLeft mirrors those two, letters included.
-export const display = { leftOnLeft: false };
+export const display = { leftOnLeft: false, unwrap: true }; // unwrap: put wrapped-around parts back (see Volume.unwrap)
 const SCREEN = { AX: [[1, 0, 0], [0, 1, 0]], COR: [[1, 0, 0], [0, 0, -1]], SAG: [[0, 1, 0], [0, 0, -1]] };
 
 export class Volume {
@@ -68,12 +68,74 @@ export class Volume {
     this.dy = mul(col, ps[0]);           // step for +1 row
     this.dz = dz;                        // step for +1 slice
     this.spacing = [ps[1], ps[0], len(dz)];
+    this.unwrapped = display.unwrap && stack.unit !== 'HU' ? this.unwrap() : [];
     this.inv = inv3(this.dx, this.dy, this.dz);
     this.basis = [row, col, norm(normal)];
     this.center = this.toWorld((this.nx - 1) / 2, (this.ny - 1) / 2, (this.nz - 1) / 2);
     this.radius = 0.5 * len(add(add(mul(this.dx, this.nx), mul(this.dy, this.ny)), mul(this.dz, this.nz)));
     this.views = this.assignViews();
     this.id = `vol${stack.uid}`;
+  }
+
+  /**
+   * MRI wrap-around: what sticks out of the measured box on one side is drawn at the
+   * opposite side (a nose tip floating behind the head on a quick overview scan). The
+   * fold is exact, so it can be undone: the picture is rotated along that direction
+   * until the cut falls in the empty gap between the head and the stray piece, and the
+   * grid's origin moves with it, so the head stays where it was and the piece lands
+   * where it belongs. Only done when the signs are clear: tissue at both ends of a
+   * direction, an empty gap inside, and a small piece on one side of it.
+   * The stack's own pictures are not changed (a copy is rotated).
+   * @returns the directions that were put right (0 columns, 1 rows, 2 slices)
+   */
+  unwrap() {
+    const { nx, ny, nz } = this, dims = [nx, ny, nz], steps = [this.dx, this.dy, this.dz], done = [];
+    let data = this.data;
+    const sample = [];
+    for (let i = 0, st = Math.max(1, Math.floor(data.length / 200000)); i < data.length; i += st) sample.push(data[i]);
+    sample.sort((a, b) => a - b);
+    const thr = sample[0] + (sample[Math.floor(sample.length * 0.99)] - sample[0]) * 0.15; // brighter than this is tissue
+    for (let a = 0; a < 3; a++) {
+      const n = dims[a];
+      if (n < 24) continue;
+      // tissue per plane across this direction (every second voxel is enough)
+      const prof = new Float64Array(n), sx = a === 0 ? 1 : 2, sy = a === 1 ? 1 : 2, sz = a === 2 ? 1 : 2;
+      for (let z = 0; z < nz; z += sz) for (let y = 0; y < ny; y += sy) {
+        const row = (z * ny + y) * nx;
+        for (let x = 0; x < nx; x += sx) if (data[row + x] > thr) prof[a === 0 ? x : a === 1 ? y : z]++;
+      }
+      const few = Math.max(3, dims[(a + 1) % 3] * dims[(a + 2) % 3] / 4 * 0.0008), empty = (i) => prof[i] < few;
+      // tissue must reach both ends (scanners blank a plane or two at the very edge)
+      let first = 0, last = n - 1;
+      while (first < n && empty(first)) first++;
+      while (last > first && empty(last)) last--;
+      const edge = Math.max(2, Math.round(n * 0.02));
+      if (first > edge || n - 1 - last > edge) continue;
+      let g0 = 0, g1 = -1;
+      for (let i = first, s = -1; i <= last + 1; i++) {
+        if (i <= last && empty(i)) { if (s < 0) s = i; } else if (s >= 0) { if (i - s > g1 - g0 + 1) { g0 = s; g1 = i - 1; } s = -1; }
+      }
+      if (g1 - g0 + 1 < Math.max(3, n * 0.03)) continue;
+      let low = 0, high = 0;
+      for (let i = 0; i < g0; i++) low += prof[i];
+      for (let i = g1 + 1; i < n; i++) high += prof[i];
+      const piece = Math.min(low, high), all = low + high;
+      if (piece > all * 0.25 || piece < all * 0.0005) continue;
+      const k = (g0 + g1 + 1) >> 1; // the plane that becomes the first one: the middle of the gap
+      const out = new data.constructor(data.length), stride = [1, nx, nx * ny][a], block = stride * n;
+      // rotate by k planes along direction a: new plane i holds old plane (i + k) mod n
+      for (let base = 0; base < data.length; base += block) {
+        const shift = k * stride;
+        out.set(data.subarray(base + shift, base + block), base);
+        out.set(data.subarray(base, base + shift), base + block - shift);
+      }
+      data = out;
+      const by = high < low ? k - n : k; // the stray piece was at the high end: it belongs before the first plane
+      this.origin = this.origin.map((v, c) => v + steps[a][c] * by);
+      done.push(a);
+    }
+    this.data = data;
+    return done;
   }
 
   toWorld(i, j, k) {

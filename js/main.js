@@ -462,6 +462,10 @@ async function open3D(stack) {
   for (const v of app.views) v.setVolume(vol);
   app.setFocus(vol.center);
   setup3DPanel();
+  const note = $('#unwrap-note'), dirs = vol.unwrapped.map((a) => (Math.abs(vol.basis[a][0]) > 0.7 ? 'side to side' : Math.abs(vol.basis[a][1]) > 0.7 ? 'front to back' : 'top to bottom'));
+  note.hidden = !dirs.length;
+  note.textContent = dirs.length ? `This scan had a part wrapped around (${dirs.join(' and ')}); it was moved back.` : '';
+  $('#unwrap-row').style.display = stack.unit === 'HU' ? 'none' : '';
   markActiveSeries(); updateToolbar(); syncPreset();
   // marks made by hand on an earlier visit come back with the series
   if (!stack.fix && !stack.fixAsked) {
@@ -1322,7 +1326,7 @@ function bestVariants(stack) {
     const models = [top, ...own.filter((m) => m.auto).map((m) => m.key), ...own.slice(0, Math.max(0, firstAuto)).map((m) => m.key), 'partsBig'].filter((k, i, a) => k !== 'classic' && a.indexOf(k) === i);
     for (const [i, m] of models.entries()) {
       add(aiVariant(m, {}, 'crisp', 0.7)); add(aiVariant(m, { level: 2 }, 'crisp', 0.7)); add(aiVariant(m, {}, 'smooth', 0.7));
-      if (i === 0) { add(aiVariant(m, { level: 1 }, 'crisp', 0.7)); add(aiVariant(m, {}, 'clean')); add(aiVariant(m, {}, 'raw', 0.7)); }
+      if (i === 0) { add(aiVariant(m, { grow: 1 }, 'crisp', 0.7)); add(aiVariant(m, { level: 1 }, 'crisp', 0.7)); add(aiVariant(m, {}, 'clean')); add(aiVariant(m, {}, 'raw', 0.7)); } // padded 1 mm: what the owner liked on his scout with the scout model
     }
   }
   for (const i of [0, 1, 3]) add(MR_VARIANTS[i]); // classic: automatic, the owner's favorite, fine and crisp with the deepest folds
@@ -1904,6 +1908,15 @@ function init() {
     app.redrawAll();
   };
   display.leftOnLeft = store.get('leftonleft', '') === '1';
+  display.unwrap = store.get('unwrap', '1') === '1';
+  $('#unwrap').checked = display.unwrap;
+  $('#unwrap').onchange = (e) => {
+    display.unwrap = e.target.checked;
+    store.set('unwrap', display.unwrap ? '1' : '0');
+    // every scan is laid out again; hand-made marks belong to one layout and are read again for the new one
+    for (const s of app.stacks.values()) { s.volume = null; s.fix = null; s.fixAsked = false; s.preview = null; }
+    if (app.mode === '3d' && app.volume) open3D(app.volume.stack);
+  };
   updateToolbar();
   app.showOverlay = store.get('overlay', '1') === '1';
   $('#show-overlay').checked = app.showOverlay;
