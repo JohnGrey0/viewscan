@@ -72,12 +72,12 @@ with sync_playwright() as p:
 
     t = time.time()
     page.click("#cmp-more")
-    page.wait_for_function("viewscan.compareDone === true && document.querySelectorAll('.cmp-tile').length === 40", timeout=1200000)
+    page.wait_for_function("viewscan.compareDone === true && document.querySelectorAll('.cmp-tile').length === 58", timeout=1200000)
     names = page.evaluate("[...document.querySelectorAll('.cmp-name')].map(n => n.textContent)")
     built = page.evaluate("[...document.querySelectorAll('.cmp-tile')].filter(t => !t.querySelector('button').disabled).length")
-    print("     12 more in %.0fs: %s" % (time.time() - t, "; ".join(names[28:31])))
-    ok(len(set(names)) == 40, "“Try 12 more” adds twelve versions that were not there before")
-    ok(built >= 37, f"and they are built too ({built} of 40 gave a model)")
+    print("     30 more in %.0fs: %s" % (time.time() - t, "; ".join(names[28:31])))
+    ok(len(set(names)) == 58, "“Try 30 more” adds thirty versions that were not there before")
+    ok(built >= 54, f"and they are built too ({built} of 58 gave a model)")
     page.evaluate("document.querySelector('#cmp-grid').scrollTop = 0")
 
     index = page.evaluate("[...document.querySelectorAll('.cmp-name')].findIndex(n => n.textContent === 'Smooth, deep folds')")

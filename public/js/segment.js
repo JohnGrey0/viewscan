@@ -44,6 +44,51 @@ function connect(list) {
 export function threadCount() { return helperCount() + 1; }
 
 /**
+ * Brain tissue found by a neural network on the graphics card (see brainnet.js).
+ * The answer is kept with the volume, so trying other settings does not run it again.
+ * @returns {Promise<{labels:Uint8Array, prob:Uint8Array, c0:number[], axes:number[][], classes:number, ms:number}>}
+ */
+let aiLine = Promise.resolve(); // one network at a time: they share one graphics card
+export function brainModel(vol, key, onProgress = () => {}) {
+  const kept = vol.ai || (vol.ai = new Map());
+  if (!kept.has(key)) {
+    const turn = aiLine;
+    const job = turn.then(() => new Promise((resolve, reject) => {
+      const w = new Worker(new URL('./aiworker.js', import.meta.url), { type: 'module' });
+      w.onmessage = (ev) => {
+        const m = ev.data;
+        if (m.type === 'progress') return job.report && job.report(m.p, m.text);
+        w.terminate();
+        if (m.type === 'done') resolve({ ...m.result, key }); else reject(new Error(m.error));
+      };
+      w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'The brain model stopped unexpectedly')); };
+      w.postMessage({ model: key, vol: { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz } });
+    }));
+    aiLine = job.catch(() => {});
+    job.catch(() => kept.delete(key)); // a failed run may be tried again
+    kept.set(key, job);
+  }
+  const job = kept.get(key);
+  job.report = onProgress;
+  return job;
+}
+/** True once a graphics device good enough for the brain models has actually been opened. */
+let gpuProbe = null;
+export function gpuReady() {
+  if (!gpuProbe) gpuProbe = (async () => {
+    try {
+      if (!navigator.gpu) return false;
+      const a = await navigator.gpu.requestAdapter();
+      if (!a) return false;
+      const d = await a.requestDevice();
+      d.destroy();
+      return true;
+    } catch { return false; }
+  })();
+  return gpuProbe;
+}
+
+/**
  * Segment a volume and build surface meshes.
  * Stage 1 (one worker) finds every part; stage 2 cleans and meshes the parts
  * side by side, one worker (one processor core) per part.
@@ -75,11 +120,21 @@ export function buildModels(vol, opts, onProgress) {
     const pool = opts.alone ? [] : startHelpers(Math.min(helperCount(), opts.helpers ?? Infinity));
     workers.push(...pool); // ended with the build
     const segPorts = connect(pool);
+    // MRI brain by neural network: runs first, on the graphics card; if it cannot run,
+    // the classic method is used and the model says so
+    let ai = null, aiNote = '';
+    const wantModel = opts.modality === 'MR' && opts.targets.includes('brain') && opts.mr && opts.mr.model && opts.mr.model !== 'classic';
+    if (wantModel) {
+      try { ai = await brainModel(vol, opts.mr.model, (p, text) => onProgress(p * 0.3, text)); }
+      catch (err) { aiNote = `The AI brain model could not run (${err.message}); the classic method was used instead.`; }
+    }
+    const segOpts = ai ? { ...opts, ai: { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key } } : opts;
     const seg = await run({
       type: 'segment',
       vol: { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz, basis: vol.basis },
-      opts, ports: segPorts,
-    }, segPorts, (m) => onProgress(m.p * 0.75, m.text));
+      opts: segOpts, ports: segPorts,
+    }, segPorts, (m) => onProgress(ai ? 0.3 + m.p * 0.4 : m.p * 0.75, m.text));
+    if (aiNote) for (const pt of seg.parts) if (pt.key === 'brain') pt.note = pt.note ? aiNote + ' ' + pt.note : aiNote;
 
     const { X, Y, Z, VOX } = seg.dims;
     const tSeg = performance.now();
