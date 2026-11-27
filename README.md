@@ -218,6 +218,12 @@ follows the network's answer closely: in `test/ai.py` 99.7% of the mesh points l
 on the surface the network found. A network takes about 3 to 8 seconds on a
 recent graphics card, once per series; other settings then reuse its answer.
 
+## Cut the model open while scrolling
+
+Under the list of 3D models, tick **Cut the model open at the slice I scroll to**. The 3D
+model is then cut at the slice you are looking at: scroll through the top-down, front or
+side pictures and the cut moves along with you. Untick it to scroll without cutting.
+
 ## Fix the brain by hand
 
 When a brain model has a filled-in fold, a bit of skull or membrane stuck to it, or a piece

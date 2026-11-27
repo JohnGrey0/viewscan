@@ -202,3 +202,7 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   names); it is the only thing the server writes on the page's behalf, and never into a scan
   folder. Without a server the marks stay in localStorage (`viewscan.fix.<id>`). The trainer
   can read these files as hand-checked labels. `T` hides marks and colors together.
+- "Cut the model open at the slice I scroll to" (`#cut-follow`, `app.cut.follow`, pref
+  `cutfollow`; the owner asked): `clipPlane()` then returns the plane of the slice view
+  scrolled last (`app.cut.plane`, set in `SliceView.scroll`) at the current focus, and
+  the "Cut away" list and slider are switched off. Unticked, scrolling does not cut.

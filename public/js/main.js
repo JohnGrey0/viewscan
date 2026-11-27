@@ -124,6 +124,12 @@ const app = {
   },
   clipPlane() {
     const vol = this.volume;
+    if (this.cut.follow && vol) {
+      // the cut follows the slice last scrolled through: everything above (in front of, left of) it is cut away
+      const plane = this.cut.plane || 'AX', g = vol.views[plane], want = { AX: [0, 0, 1], COR: [0, -1, 0], SAG: [1, 0, 0] }[plane];
+      const n = vec.mul(g.n, Math.sign(vec.dot(g.n, want)) || 1);
+      return [...n, vec.dot(this.mpr.focus, n)];
+    }
     if (!this.cut.axis || !vol) return null;
     const n = { S: [0, 0, 1], A: [0, -1, 0], L: [1, 0, 0] }[this.cut.axis];
     const half = vol.extentAlong(n) / 2;
@@ -1812,6 +1818,16 @@ function init() {
   $('#r3-iso').oninput = (e) => setIso(e.target.value);
   for (const key of ['show', 'mode']) for (const b of document.querySelectorAll(`#r3-${key} button`)) b.onclick = () => setR3(key, b.dataset.v);
   for (const b of document.querySelectorAll('#r3-look button')) b.onclick = () => app.views.find((v) => v.kind === '3d')?.look(b.dataset.v);
+  app.cut.follow = store.get('cutfollow', '') === '1';
+  const showFollow = () => { $('#cut-follow').checked = app.cut.follow; $('#cut-axis').disabled = $('#cut-pos').disabled = app.cut.follow; };
+  showFollow();
+  $('#cut-follow').onchange = (e) => {
+    app.cut.follow = e.target.checked;
+    store.set('cutfollow', app.cut.follow ? '1' : '');
+    showFollow();
+    if (app.cut.follow && app.r3d.show !== 'models' && app.meshItems().length) setR3('show', 'models');
+    app.redrawAll();
+  };
   $('#cut-axis').onchange = (e) => {
     app.cut.axis = e.target.value;
     if (app.cut.axis && app.r3d.show !== 'models' && app.meshItems().length) setR3('show', 'models');
