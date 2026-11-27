@@ -519,6 +519,7 @@ export class SliceView extends ViewBase {
     const N = this.count();
     const idx = Math.max(0, Math.min(N - 1, this.sliceIndex() + k));
     const target = (idx - (N - 1) / 2) * this.g.step;
+    this.app.cut.plane = this.plane; // "cut away follows the slice" cuts along the plane scrolled last
     this.app.setFocus(add(this.app.mpr.focus, mul(this.g.n, target - this.dn())));
   }
   setCross(x, y) {
