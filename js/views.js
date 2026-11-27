@@ -1,7 +1,7 @@
 // views.js — the interactive panels: StackView (original 2-D images),
 // SliceView (a reformatted plane through a volume) and View3D.
 
-import { vec, orientLetters } from './volume.js';
+import { vec, orientLetters, display } from './volume.js';
 
 const { add, sub, mul, dot, cross, norm } = vec;
 export const PLANE_COLOR = { AX: '#ff6b6b', COR: '#4ade80', SAG: '#fbbf24' };
@@ -308,11 +308,17 @@ export class StackView extends ViewBase {
     else { const k = Math.min(this.w / old[0], this.h / old[1]); this.zoom *= k; this.panX *= k; this.panY *= k; this.fitZoom = null; }
   }
   reset() { this.rot = 0; this.flip = false; this.fit(); this.invalidate(); }
+  /** Mirrored? The Flip button, or "left on left" for a picture whose columns run toward the patient's left. */
+  flipped() {
+    const f = this.stack && this.stack.frames[this.index], iop = (f && f.iop) || (this.stack && this.stack.desc.iop);
+    const auto = !!(display.leftOnLeft && iop && iop[0] > 0.7);
+    return this.flip !== auto;
+  }
   matrix() {
     const s = this.stack, ps = this.spacing() || [1, 1];
     return new DOMMatrix()
       .translate(this.w / 2 + this.panX, this.h / 2 + this.panY)
-      .scale(this.zoom).rotate(this.rot * 90).scale(this.flip ? -1 : 1, 1)
+      .scale(this.zoom).rotate(this.rot * 90).scale(this.flipped() ? -1 : 1, 1)
       .scale(ps[1], ps[0]).translate(-s.cols / 2, -s.rows / 2);
   }
   screenToPlane(x, y) { const p = this.matrix().inverse().transformPoint({ x, y }); return [p.x, p.y]; }
@@ -423,7 +429,7 @@ export class StackView extends ViewBase {
     const iop = (fr && fr.iop) || s.desc.iop;
     if (iop) {
       const ex = iop.slice(0, 3), ey = iop.slice(3, 6);
-      const inv = new DOMMatrix().rotate(this.rot * 90).scale(this.flip ? -1 : 1, 1).inverse();
+      const inv = new DOMMatrix().rotate(this.rot * 90).scale(this.flipped() ? -1 : 1, 1).inverse();
       const r = inv.transformPoint({ x: 1, y: 0 }), dn = inv.transformPoint({ x: 0, y: 1 });
       this.setOrient(add(mul(ex, r.x), mul(ey, r.y)), add(mul(ex, dn.x), mul(ey, dn.y)));
     } else this.setOrient(null, null);

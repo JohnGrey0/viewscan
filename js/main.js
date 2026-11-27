@@ -2,7 +2,7 @@
 
 import { Stack, pool, srcFor } from './loader.js';
 import { organize, PLANE_LABEL } from './series.js';
-import { Volume, vec } from './volume.js';
+import { Volume, vec, display } from './volume.js';
 import { GLRenderer } from './glrender.js';
 import { StackView, SliceView, View3D, fmtDate } from './views.js';
 import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainAnswer, ownModels, OWN } from './segment.js';
@@ -511,6 +511,9 @@ function buildToolbar() {
     bar.append(act('rotate', 'Rotate', 'Rotate a quarter turn', () => withStackView((v) => { v.rot = (v.rot + 1) % 4; v.fit(); v.invalidate(); })),
       act('flip', 'Flip', 'Mirror left ↔ right', () => withStackView((v) => { v.flip = !v.flip; v.invalidate(); })));
   }
+  const lol = act('flip', 'Left on left', 'Hospitals draw top-down and front pictures as if facing the patient, so the patient’s left is on the right of the screen (see the L and R letters). Switch this on to mirror them, so left is on the left.', () => setLeftOnLeft(!display.leftOnLeft));
+  lol.id = 'btn-lol';
+  bar.append(lol);
   bar.append(act('reset', 'Reset', 'Back to the starting view (R)', resetView), sep());
   const playBtn = act('play', 'Play', 'Play through the slices like a film (Space)', toggleCine);
   playBtn.id = 'btn-play';
@@ -537,6 +540,18 @@ function buildToolbar() {
   updateToolbar();
   syncPreset();
 }
+/** "Left on left": mirror the top-down and front pictures (hospitals show the patient's left on the right). */
+function setLeftOnLeft(on) {
+  if (display.leftOnLeft === on) return;
+  display.leftOnLeft = on;
+  store.set('leftonleft', on ? '1' : '');
+  for (const s of app.stacks.values()) {
+    if (s.volume) s.volume.views = s.volume.assignViews();
+    for (const a of s.annots) if (a.space === 'AX' || a.space === 'COR') for (const p of a.pts) p[0] = -p[0]; // measurements stay on their spot
+  }
+  if (app.volume) { const focus = [...app.mpr.focus]; for (const v of app.views) if (v.kind === 'slice') v.setVolume(app.volume); app.setFocus(focus); }
+  updateToolbar(); app.redrawAll();
+}
 function setTool(id) { app.tool = id; app.toolPicked = true; updateToolbar(); app.redrawAll(); }
 function toggleOverlay() {
   app.showOverlay = !app.showOverlay;
@@ -546,6 +561,7 @@ function toggleOverlay() {
   app.redrawAll();
 }
 function updateToolbar() {
+  $('#btn-lol')?.classList.toggle('toggled', display.leftOnLeft);
   const fixing = app.mode === '3d' && app.tool === 'fix';
   $('#fix-panel').hidden = !fixing;
   $('#app').classList.toggle('tool-fix', fixing);
@@ -1844,6 +1860,8 @@ function init() {
     if (app.r3d.show !== 'models' && app.meshItems().length) setR3('show', 'models');
     app.redrawAll();
   };
+  display.leftOnLeft = store.get('leftonleft', '') === '1';
+  updateToolbar();
   app.showOverlay = store.get('overlay', '1') === '1';
   $('#show-overlay').checked = app.showOverlay;
   $('#show-overlay').onchange = (e) => { if (e.target.checked !== app.showOverlay) toggleOverlay(); };
