@@ -115,7 +115,7 @@ export async function saveFix(stack, vol, fix) {
   });
   let where = 'browser';
   if (fixStore.server) try {
-    const r = await fetch('/api/fix/' + fileId(stack), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
+    const r = await fetch('api/fix/' + fileId(stack), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
     if (r.ok) where = 'server';
   } catch { /* no server here */ }
   if (where === 'browser') localStorage.setItem('viewscan.fix.' + fileId(stack), body);
@@ -127,7 +127,7 @@ export async function saveFix(stack, vol, fix) {
 export async function loadFix(stack, vol) {
   let saved = null;
   if (fixStore.server) try {
-    const r = await fetch('/api/fix/' + fileId(stack), { cache: 'no-store' });
+    const r = await fetch('api/fix/' + fileId(stack), { cache: 'no-store' });
     if (r.ok && (r.headers.get('content-type') || '').includes('json')) saved = await r.json();
   } catch { /* no server here */ }
   if (!saved) { try { saved = JSON.parse(localStorage.getItem('viewscan.fix.' + fileId(stack)) || 'null'); } catch { saved = null; } }
