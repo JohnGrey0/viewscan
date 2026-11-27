@@ -154,6 +154,24 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   have their own panel (`#ai-more`); the owner does not want them mixed.
   Playwright's bundled Chromium cannot open a WebGPU device on Windows: `test/ai.py`
   uses installed Chrome; every other test therefore runs the classic method.
+- Home-trained models: `../viewscan-train` (Python + PyTorch, its own repo) trains
+  MeshNets of the same shape and installs them into `public/models/own/<name>/`
+  with an entry in `public/models/own/index.json` (git-ignored: they are trained
+  with private scans' labels). `ownModels()` in `segment.js` reads the index;
+  `main.js` adds the "Your own models" group and their compare-grid versions (at
+  the front of `AI_VARIANTS`; `test/ai.py` allows for them). An entry carries
+  `notBrain` (how many leading classes are not brain: 2 for the trainer's label
+  set of background, fold fluid, left, right, cerebellum, brain stem), `cerebellum`
+  (class numbers for the neck cut) and `ver` (cache bust). The trainer's
+  `conform.py` mirrors `conform()`/`runModel()` here; change one, change the other
+  (`viewscan-train/tools/browser_parity.py` checks voxel by voxel).
+- "Use every series of this study" (`#a-study`, `brainAnswer` in `segment.js`,
+  `mergeAnswers` in `brainnet.js`): the model runs on every usable series, answers
+  are shifted to the base series' cube and averaged. Off by default: on a real
+  study the head had turned up to 2 degrees between series and the average blurred
+  the folds. A three-input "study" model (one input per slice direction) scored
+  better in the trainer on simulated studies; Viewscan cannot feed it yet (needs
+  multi-channel input in `runModel` and real registration between series).
 - An experiment that cut deeper folds as thin slits and found the gap between the
   halves as a curved sheet was dropped at the owner's request in favor of the
   models (the sheet-based split was clean; the slits came out ragged).

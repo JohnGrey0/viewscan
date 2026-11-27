@@ -193,7 +193,18 @@ For MRI, **Brain finder** (above "Detail") chooses how the brain is found:
   what **Auto** uses), Tissue GWM, Brain mask, Aparc+Aseg 50 and 104.
   They were trained on T1-weighted scans; Auto uses the classic method for T2 and
   proton-density scans, and anywhere WebGPU is missing.
+- **Your own models**: models trained on this computer with the separate
+  `viewscan-train` project appear in their own group at the top of the list. They
+  learn from sharp public brains made rough on purpose (6 mm slices, other kinds
+  of contrast), so they hold up better on an ordinary hospital study, and they
+  tell the two halves, the cerebellum, the brain stem and the fluid in the folds
+  apart. They live in `public/models/own/`, which is not part of the repository.
 - **Classic**: the outline-and-folds method described below. Works on any scan.
+
+With a model of your own, **Use every series of this study** (off at the start)
+runs the model on each series of the study and averages the answers. The overall
+shape gets steadier; folds get softer, because the head moves a little between
+series.
 
 Each has its own fine-tune panel, and the settings of one are not used by the
 other. With a panel open, the slices are tinted with what was found. The mesh

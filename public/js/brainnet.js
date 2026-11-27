@@ -26,6 +26,10 @@ export const MODELS = {
   areas50: { dir: 'model30chan50cls', quantile: true, thr: 0, pad: 0, pre: 'maskFast', name: 'Aparc+Aseg 50' },
   areas104: { dir: 'model21_104class', quantile: false, thr: 0, pad: 0, pre: 'maskFast', name: 'Aparc+Aseg 104' },
 };
+// Models trained at home with viewscan-train are listed in models/own/index.json and
+// added here when the app starts (see ownModels in segment.js). Such a model says
+// how many of its first classes are not brain (notBrain) and which class numbers
+// are the cerebellum.
 /** Class numbers of the 18-part models (FreeSurfer names). */
 export const PARTS = ['Unknown', 'Cerebral-White-Matter', 'Cerebral-Cortex', 'Lateral-Ventricle', 'Inferior-Lateral-Ventricle', 'Cerebellum-White-Matter', 'Cerebellum-Cortex', 'Thalamus', 'Caudate', 'Putamen', 'Pallidum', '3rd-Ventricle', '4th-Ventricle', 'Brain-Stem', 'Hippocampus', 'Amygdala', 'Accumbens-area', 'VentralDC'];
 
@@ -40,12 +44,14 @@ const cache = new Map();
 /** Reads a model: its layers in order, each with kernel and bias in one array. */
 export async function loadModel(key) {
   const def = MODELS[key];
-  if (def && cache.has(def.dir)) return { ...cache.get(def.dir), key, def };
+  if (def && cache.has(def.dir) && (!def.ver || cache.get(def.dir).ver === def.ver)) return { ...cache.get(def.dir), key, def };
   if (!def) throw new Error('Unknown model ' + key);
+  if (def.ver && cache.has(def.dir) && cache.get(def.dir).ver !== def.ver) cache.delete(def.dir); // retrained since
   const base = new URL(`../models/${def.dir}/`, import.meta.url);
-  const json = await (await fetch(new URL('model.json', base))).json();
+  const fresh = def.ver ? { cache: 'no-cache' } : undefined;
+  const json = await (await fetch(new URL('model.json', base), fresh)).json();
   const man = json.weightsManifest[0];
-  const bin = await (await fetch(new URL(man.paths[0], base))).arrayBuffer();
+  const bin = await (await fetch(new URL(man.paths[0], base), fresh)).arrayBuffer();
   const at = new Map();
   let off = 0;
   for (const w of man.weights) { const n = w.shape.reduce((a, b) => a * b, 1); at.set(w.name, { off, n, shape: w.shape }); off += n * 4; }
@@ -63,7 +69,7 @@ export async function loadModel(key) {
     w.set(new Float32Array(bin, b.off, b.n), k.n);
     layers.push({ size: k.shape[0], cin: k.shape[3], cout: k.shape[4], dil: l.config.dilation_rate[0], w });
   }
-  const model = { key, def, layers, act, classes: layers[layers.length - 1].cout };
+  const model = { key, def, layers, act, classes: layers[layers.length - 1].cout, ver: def.ver };
   cache.set(def.dir, model);
   return model;
 }
@@ -115,6 +121,70 @@ export function conform(vol, opts = {}) {
   return { data: out, c0, axes: AX };
 }
 
+/**
+ * Merges a model's answers for several series of one study into the first one's cube.
+ * A hospital study is the same head scanned several times, with thick slices in
+ * different directions: each answer is sharp where the others are coarse, so their
+ * average is better than any one of them. All series share the scanner's coordinates,
+ * so an answer only has to be shifted. An answer that does not fit the first one
+ * (the head moved, or the model failed on that series) is left out.
+ * @param base    {prob, c0, geo:{nx,ny,nz,origin,dx,dy,dz}}
+ * @param others  the same, for the other series
+ * @returns {{prob:Uint8Array, used:number, total:number}}
+ */
+export function mergeAnswers(base, others) {
+  const S = SIZE, N = S * S * S, AX = AXES;
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cr = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  // which voxels of the base cube lie inside a scan
+  const coverage = (g) => {
+    const r0 = cr(g.dy, g.dz), r1 = cr(g.dz, g.dx), r2 = cr(g.dx, g.dy), det = dot(g.dx, r0);
+    const inv = [r0, r1, r2].map((r) => r.map((v) => v / det));
+    const toIdx = (p) => { const q = [p[0] - g.origin[0], p[1] - g.origin[1], p[2] - g.origin[2]]; return [dot(inv[0], q), dot(inv[1], q), dot(inv[2], q)]; };
+    const A0 = toIdx(base.c0);
+    const step = AX.map((a) => { const q = toIdx([base.c0[0] + a[0], base.c0[1] + a[1], base.c0[2] + a[2]]); return [q[0] - A0[0], q[1] - A0[1], q[2] - A0[2]]; });
+    const m = new Uint8Array(N), hi = [g.nx - 0.5, g.ny - 0.5, g.nz - 0.5];
+    for (let d = 0, o = 0; d < S; d++) for (let h = 0; h < S; h++) {
+      const bx = A0[0] + d * step[0][0] + h * step[1][0], by = A0[1] + d * step[0][1] + h * step[1][1], bz = A0[2] + d * step[0][2] + h * step[1][2];
+      for (let w = 0; w < S; w++, o++) {
+        const fx = bx + w * step[2][0], fy = by + w * step[2][1], fz = bz + w * step[2][2];
+        if (fx >= -0.5 && fy >= -0.5 && fz >= -0.5 && fx <= hi[0] && fy <= hi[1] && fz <= hi[2]) m[o] = 1;
+      }
+    }
+    return m;
+  };
+  const sum = new Float32Array(N), cnt = coverage(base.geo);
+  for (let i = 0; i < N; i++) if (cnt[i]) sum[i] = base.prob[i];
+  const tmp = new Int16Array(N);
+  let used = 0;
+  for (const o of others) {
+    const diff = [base.c0[0] - o.c0[0], base.c0[1] - o.c0[1], base.c0[2] - o.c0[2]];
+    const off = AX.map((a) => dot(a, diff)); // base voxel p is voxel p + off of the other cube
+    const i0 = off.map(Math.floor), f = off.map((v, k) => v - i0[k]);
+    const wts = [], jump = [];
+    for (let c = 0; c < 8; c++) { const a = c & 1, b = (c >> 1) & 1, e = (c >> 2) & 1; wts.push((a ? f[0] : 1 - f[0]) * (b ? f[1] : 1 - f[1]) * (e ? f[2] : 1 - f[2])); jump.push((a * S + b) * S + e); }
+    const m = coverage(o.geo), P = o.prob;
+    let both = 0, na = 0, nb = 0;
+    for (let d = 0, i = 0; d < S; d++) for (let h = 0; h < S; h++) for (let w = 0; w < S; w++, i++) {
+      tmp[i] = -1;
+      if (!m[i]) continue;
+      const qd = d + i0[0], qh = h + i0[1], qw = w + i0[2];
+      if (qd < 0 || qh < 0 || qw < 0 || qd >= S - 1 || qh >= S - 1 || qw >= S - 1) continue;
+      const q = (qd * S + qh) * S + qw;
+      let v = 0;
+      for (let c = 0; c < 8; c++) v += wts[c] * P[q + jump[c]];
+      tmp[i] = v;
+      if (cnt[i] && sum[i] >= 0) { const a = base.prob[i] > 127, b = v > 127; if (a) na++; if (b) nb++; if (a && b) both++; }
+    }
+    if (na < 1000 || 2 * both / (na + nb) < 0.75) continue; // does not fit: left out
+    used++;
+    for (let i = 0; i < N; i++) if (tmp[i] >= 0) { sum[i] += tmp[i]; cnt[i]++; }
+  }
+  const prob = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (cnt[i]) prob[i] = Math.round(sum[i] / cnt[i]);
+  return { prob, used, total: others.length };
+}
+
 const CONV = /* wgsl */ `
 struct P { D: u32, H: u32, W: u32, cin: u32, cout: u32, dil: i32, d0: u32, act: u32 };
 @group(0) @binding(0) var<storage, read> src: array<f32>;
@@ -148,7 +218,8 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
     dst[ob + c] = v;
   }
 }`;
-// last layer: score every class, keep the best one and how likely "not background" is
+// last layer: score every class, keep the best one and how likely "brain" is: one minus
+// the share of the first classes, which are not brain (p.act holds how many; 1 = background only)
 const HEAD = /* wgsl */ `
 struct P { D: u32, H: u32, W: u32, cin: u32, cout: u32, dil: i32, d0: u32, act: u32 };
 @group(0) @binding(0) var<storage, read> src: array<f32>;
@@ -173,7 +244,9 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
   var sum = 0.0;
   for (var co = 0u; co < p.cout; co++) { sum += exp(logit[co] - bestV); }
   dst[v * 2u] = f32(best);
-  dst[v * 2u + 1u] = 1.0 - exp(logit[0] - bestV) / sum;
+  var out = 0.0;
+  for (var co = 0u; co < p.act && co < p.cout; co++) { out += exp(logit[co] - bestV); }
+  dst[v * 2u + 1u] = 1.0 - out / sum;
 }`;
 
 let gpu = null; // { adapter, device, conv, head } kept between runs
@@ -256,7 +329,7 @@ export async function runModel(vol, key, onProgress = () => {}, opts = {}) {
         { binding: 2, resource: { buffer: wbuf } }, { binding: 3, resource: { buffer: uni } }] });
       for (let s = 0; s < slabs; s++) {
         const u = new ArrayBuffer(32), u32 = new Uint32Array(u), i32 = new Int32Array(u);
-        u32[0] = D; u32[1] = H; u32[2] = W; u32[3] = L.cin; u32[4] = L.cout; i32[5] = L.dil; u32[6] = s * SLAB; u32[7] = model.act === 'relu' ? 1 : 2;
+        u32[0] = D; u32[1] = H; u32[2] = W; u32[3] = L.cin; u32[4] = L.cout; i32[5] = L.dil; u32[6] = s * SLAB; u32[7] = last ? (model.def.notBrain || 1) : model.act === 'relu' ? 1 : 2;
         device.queue.writeBuffer(uni, 0, u);
         const enc = device.createCommandEncoder(), pass = enc.beginComputePass();
         pass.setPipeline(pipe); pass.setBindGroup(0, bind);

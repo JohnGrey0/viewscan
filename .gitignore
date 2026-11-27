@@ -18,3 +18,5 @@
 __pycache__/
 !/.gitattributes
 !/.github/
+# models trained at home may have learned from private scans: they stay local
+/public/models/own/

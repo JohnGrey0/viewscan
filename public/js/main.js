@@ -5,7 +5,7 @@ import { organize, PLANE_LABEL } from './series.js';
 import { Volume, vec } from './volume.js';
 import { GLRenderer } from './glrender.js';
 import { StackView, SliceView, View3D, fmtDate } from './views.js';
-import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainModel } from './segment.js';
+import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainAnswer, ownModels } from './segment.js';
 import { saveFolder, removeFolder, loadFolders, updateSummaries, SUMMARY_FORMAT } from './localstore.js';
 
 const $ = (s) => document.querySelector(s);
@@ -109,6 +109,21 @@ const app = {
 window.viewscan = app;
 // can this computer run the AI brain models? (asked once; the panel is refreshed when the answer is in)
 gpuReady().then((ok) => { app.gpuOK = ok; showMethod(); });
+// models trained at home get their own group at the top of the list, and versions in the compare grid
+ownModels().then((list) => {
+  if (!list.length) return;
+  const group = h('optgroup', { label: 'Your own models (trained on this computer)' });
+  for (const m of list) {
+    group.append(h('option', { value: m.key }, m.name));
+    MODEL_SHORT[m.key] = m.name;
+    MODEL_WHY[m.key] = m.why || 'Trained at home with viewscan-train.';
+    AI_VARIANTS.unshift(aiVariant(m.key, { study: 1 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'clean'), aiVariant(m.key, { study: 1, level: 2 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'smooth', 0.7), aiVariant(m.key, {}, 'crisp', 0.7), aiVariant(m.key, {}, 'clean'), aiVariant(m.key, { level: 2 }, 'crisp', 0.7), aiVariant(m.key, { level: -2 }, 'crisp', 0.7), aiVariant(m.key, {}, 'smooth', 0.7));
+    OWN_KEYS.push(m.key);
+  }
+  $('#m-model').insertBefore(group, $('#m-model').children[1]);
+  const stack = app.volume?.stack;
+  if (stack) loadMethod(stack); else showMethod();
+});
 app.api = { openStack: (...a) => openStack(...a), setMode: (m) => setMode(m) }; // for tests and the console
 
 // ------------------------------------------------------------ library ------
@@ -735,12 +750,40 @@ function autoModel(stack = app.volume?.stack) {
 }
 /** The brain finder in use: the dropdown's choice, with "Auto" worked out. */
 function chosenModel(stack = app.volume?.stack) { const v = $('#m-model').value; return v === 'auto' ? autoModel(stack) : v; }
-const AI_DEFAULT = { level: 0, grow: 0, stump: 8 };
-const readAiRaw = () => ({ level: Number($('#a-level').value), grow: Number($('#a-grow').value), stump: Number($('#a-stump').value) });
-const aiFromRaw = (model, a) => ({ model, folds: a.level / 5, grow: a.grow, stump: a.stump });
+const AI_DEFAULT = { level: 0, grow: 0, stump: 8, study: 0 };
+const readAiRaw = () => ({ level: Number($('#a-level').value), grow: Number($('#a-grow').value), stump: Number($('#a-stump').value), study: $('#a-study').checked ? 1 : 0 });
+const aiFromRaw = (model, a) => ({ model, folds: a.level / 5, grow: a.grow, stump: a.stump, study: a.study ? 1 : 0 });
+// The other series of the same study that a brain model can also look at (see brainAnswer):
+// every MRI series that is a proper volume, except maps and overviews that do not show anatomy.
+const STUDY_SKIP = /DIFF|DWI|ADC|TRACE|PERF|LOCAL|MIP|SWI|PHASE/i;
+function studyPartners(stack) {
+  if (!stack || stack.unit === 'HU' || stack.desc.combined) return [];
+  const list = [];
+  for (const se of stack.study.series) {
+    if (se === stack.series || se.modality !== 'MR' || se.combined || STUDY_SKIP.test(se.desc || '')) continue;
+    const st = se.stacks.filter((x) => x.volume && !x.combined && x.n >= 16).sort((a, b) => b.n - a.n)[0];
+    if (st) list.push({ series: se, st });
+  }
+  return list;
+}
+/** Reads those series fully and returns their volumes (kept once read). */
+async function studyVolumes(stack, say = () => {}) {
+  const list = studyPartners(stack), vols = [];
+  for (const [k, { series, st }] of list.entries()) {
+    say(`Reading the other series of this study… ${k + 1} of ${list.length}`);
+    try {
+      const s = getStack(stack.study, series, st);
+      await s.load();
+      if (s.failed || !s.buffer || s.unit === 'HU') continue;
+      vols.push(s.volume || (s.volume = new Volume(s)));
+    } catch { /* a series that cannot be read is left out */ }
+  }
+  return vols;
+}
 function showAi(a) {
   const out = (id, text) => { $(id).parentElement.querySelector('output').textContent = text; };
-  $('#a-level').value = a.level; $('#a-grow').value = a.grow; $('#a-stump').value = a.stump;
+  $('#a-level').value = a.level; $('#a-grow').value = a.grow; $('#a-stump').value = a.stump; $('#a-study').checked = !!a.study;
+  $('#a-study-row').style.display = studyPartners(app.volume?.stack).length ? '' : 'none';
   out('#a-level', a.level === 0 ? 'normal' : a.level > 0 ? `stricter +${a.level}` : `looser ${a.level}`);
   out('#a-grow', a.grow === 0 ? 'none' : `${a.grow > 0 ? '+' : ''}${a.grow} mm`);
   out('#a-stump', a.stump >= 30 ? 'all of it' : `${a.stump} mm`);
@@ -861,6 +904,7 @@ function initMr() {
   for (const id of MR_INPUTS) $(id).addEventListener('input', () => keep({ ...readMrRaw(), preset: 'custom' }));
   $('#m-model').addEventListener('change', () => { setMethod($('#m-model').value); requestPreview(); });
   for (const id of ['#a-level', '#a-grow', '#a-stump']) $(id).addEventListener('input', () => { setMethod($('#m-model').value, readAiRaw()); requestPreview(); });
+  $('#a-study').onchange = () => { setMethod($('#m-model').value, readAiRaw()); requestPreview(); };
   $('#a-reset').onclick = () => { setMethod($('#m-model').value, AI_DEFAULT); requestPreview(); };
   $('#a-live').checked = store.get('ailive', '1') === '1';
   $('#a-live').onchange = (e) => { store.set('ailive', e.target.checked ? '1' : ''); requestPreview(); };
@@ -921,7 +965,9 @@ function pumpPreview() {
   // an AI model answers first (once per scan; the answer is kept), then its result is laid on the slices
   if (mr.model !== 'classic') {
     pvStatus('Running the brain model on the graphics card…');
-    brainModel(vol, mr.model, (p, text) => { if (app.volume === vol) pvStatus(text); })
+    const say = (text) => { if (app.volume === vol) pvStatus(text); };
+    (mr.study ? studyVolumes(stack, say) : Promise.resolve([]))
+      .then((others) => brainAnswer(vol, mr.model, (p, text) => say(text), others))
       .then((ai) => { if (app.volume !== vol) { preview.busy = false; return pumpPreview(); } sendPreview(vol, stack, mr, ai); })
       .catch((err) => { preview.busy = false; pvStatus(`The AI model could not run (${err.message}). Pick “Classic” under “Brain finder”.`); });
     return;
@@ -932,13 +978,14 @@ function sendPreview(vol, stack, mr, ai) {
   const first = preview.volId !== vol.id;
   preview.vol = vol; preview.volId = vol.id;
   if (first) preview.aiKey = '';
-  const sendAi = ai && preview.aiKey !== ai.key;
-  if (sendAi) preview.aiKey = ai.key;
+  const aiId = ai ? ai.key + (ai.study ? '+study' : '') : '';
+  const sendAi = ai && preview.aiKey !== aiId;
+  if (sendAi) preview.aiKey = aiId;
   pvStatus(first ? 'Looking for the brain…' : 'Updating…');
   preview.worker.postMessage({
     type: 'preview', id: ++preview.seq,
     vol: first ? { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz, basis: vol.basis } : null,
-    ai: sendAi ? { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key } : null,
+    ai: sendAi ? { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key, cereb: ai.cereb } : null,
     opts: { voxel: 2, modality: 'MR', mr, mrInfo: { tr: stack.series.info.tr, te: stack.series.info.te, ti: stack.series.info.ti } },
   });
 }
@@ -1102,10 +1149,12 @@ const MR_VARIANTS = [
 const cmp = { run: 0, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0, cam: null, radius: 100, vol: null, fit: 1, t0: 0 };
 // AI versions: every network, each with mixes of its own settings (how sure it must
 // be, pad or shave, how much brain stem) and of finish and grid.
+const OWN_KEYS = []; // home-trained models
 const MODEL_SHORT = { partsBig: '18 parts (best)', parts: '18 parts (quicker)', tissue: 'Tissue GWM', tissueFast: 'Tissue GWM (light)', maskFast: 'Brain mask (fast)', mask: 'Brain mask (high accuracy)', areas50: 'Aparc+Aseg 50', areas104: 'Aparc+Aseg 104' };
 function aiVariant(model, ai = {}, finish = 'crisp', voxel = 0) {
   const tags = [MODEL_SHORT[model]];
   if (ai.level) tags.push(ai.level > 0 ? `stricter +${ai.level}` : `looser ${ai.level}`);
+  if (ai.study) tags.push('whole study');
   if (ai.grow) tags.push(ai.grow > 0 ? `padded ${ai.grow} mm` : `shaved ${-ai.grow} mm`);
   if (ai.stump !== undefined && ai.stump !== AI_DEFAULT.stump) tags.push(ai.stump >= 30 ? 'whole brain stem' : `brain stem ${ai.stump} mm`);
   if (voxel) tags.push(voxel < 1 ? 'fine grid' : 'coarse grid');
@@ -1135,7 +1184,7 @@ function freshAiVariants(stack, count) {
   for (let guard = 0; out.length < count && guard < 4000; guard++) {
     const ai = {}, level = pick([-3, -1, 0, 1, 2, 2, 3, 3, 4, 5]), grow = pick([0, 0, 0, 0, -1, -0.5, 0.5, 1]), stump = pick([8, 8, 8, 8, 0, 16, 30]);
     if (level) ai.level = level; if (grow) ai.grow = grow; if (stump !== AI_DEFAULT.stump) ai.stump = stump;
-    const v = aiVariant(pick(['partsBig', 'partsBig', 'partsBig', 'partsBig', 'parts', 'parts', 'tissue', 'tissue', 'mask', 'tissueFast', 'areas50', 'areas104']), ai, pick(['crisp', 'crisp', 'raw', 'clean', 'smooth', 'xsmooth']), pick([0, 0.7, 0.7, 0.7, 1.4]));
+    const v = aiVariant(pick([...OWN_KEYS, ...OWN_KEYS, ...OWN_KEYS, 'partsBig', 'partsBig', 'partsBig', 'partsBig', 'parts', 'parts', 'tissue', 'tissue', 'mask', 'tissueFast', 'areas50', 'areas104']), ai, pick(['crisp', 'crisp', 'raw', 'clean', 'smooth', 'xsmooth']), pick([0, 0.7, 0.7, 0.7, 1.4]));
     const key = variantKey(v);
     if (tried.has(key)) continue;
     tried.add(key);
@@ -1150,6 +1199,7 @@ function variantWhy(v) {
   if (v.model === 'parts') bits.push('the smaller neural network'); else if (v.model === 'tissue') bits.push('the network that only knows gray and white matter');
   else if (v.model === 'partsBig') bits.push('neural network on the graphics card');
   else if (!v.model && !Object.keys(s).length) bits.push('classic method: outline, and folds by brightness');
+  if (v.ai && v.ai.study) bits.push('the model looked at every series of the study and its answers were merged');
   if (v.ai && v.ai.level) bits.push(v.ai.level > 0 ? 'it must be surer that a spot is brain, which opens the folds' : 'it may be less sure that a spot is brain, which fills the folds in');
   if (v.ai && v.ai.grow) bits.push(v.ai.grow > 0 ? `padded ${v.ai.grow} mm all round` : `shaved ${-v.ai.grow} mm all round`);
   if (v.ai && v.ai.stump !== undefined) bits.push(v.ai.stump >= 30 ? 'all of the brain stem the model found is kept' : `${v.ai.stump} mm of brain stem kept below the cerebellum`);
@@ -1234,7 +1284,7 @@ function drawCompare() {
   }
 }
 function closeCompare(keepTile) {
-  cmp.run++; // anything still being built is ignored when it arrives
+  cmp.run++; cmp.others = null; // anything still being built is ignored when it arrives
   for (const t of cmp.tiles) if (t !== keepTile && t.item && t.item.mesh) app.gl.freeMesh(t.item.mesh);
   cmp.tiles = []; cmp.queue = [];
   $('#compare').hidden = true;
@@ -1313,6 +1363,7 @@ function addCompare(variants) {
     try {
       const how = v.model === 'auto' ? autoModel(stack) : v.model || 'classic';
       const opts = buildOptions(stack, ['brain'], how === 'classic' ? { model: how, ...mrFromRaw({ ...MR_DEFAULT, ...v.set }) } : aiFromRaw(how, { ...AI_DEFAULT, ...(v.ai || {}) }));
+      if (opts.mr.study) opts.others = await (cmp.others || (cmp.others = studyVolumes(stack)));
       opts.finish = { ...CMP_FINISH[v.finish || 'clean'].values };
       if (v.voxel) opts.voxel = v.voxel;
       // a build that never answers (its worker died without a word) must not hold up the rest
@@ -1367,7 +1418,7 @@ function addCompare(variants) {
 function openCompare() {
   const vol = app.volume;
   if (!vol || app.building || vol.stack.unit === 'HU') return;
-  cmp.run++;
+  cmp.run++; cmp.others = null;
   Object.assign(cmp, { vol, cam: null, fit: 1, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0 });
   $('#compare').hidden = false;
   // two groups, each with its own heading: what the AI models make, and what the classic method makes
@@ -1476,7 +1527,9 @@ async function build() {
   setProg(0, 'Preparing…');
   const stack = vol.stack;
   try {
-    const result = await buildModels(vol, buildOptions(stack, keys, readMr()), setProg);
+    const opts = buildOptions(stack, keys, readMr());
+    if (opts.mr.study && opts.mr.model !== 'classic') opts.others = await studyVolumes(stack, (text) => setProg(0, text));
+    const result = await buildModels(vol, opts, setProg);
     const prev = stack.models;
     if (prev) for (const it of prev.items) if (it.mesh) app.gl.freeMesh(it.mesh);
     const old = new Map((prev?.items || []).map((i) => [i.key, i]));

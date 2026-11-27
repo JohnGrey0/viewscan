@@ -1054,9 +1054,10 @@ function brainFromModel(grid, opts, rest, report) {
   // Tidy up. Below the cerebellum only a short stump of the brain stem is kept: further
   // down the network sometimes takes bits of the neck for brain, joined on through the
   // spinal cord. Then anything that only hangs on by a thread (under 3 mm thick) goes.
+  const cereb = ai.cereb || (ai.classes === 18 ? [5, 6] : null); // class numbers of the cerebellum, where the model has them
   const ups = [];
-  for (let i = 0; i < N; i += 3) if (brain[i] && (part[i] === 5 || part[i] === 6)) { const x = i % X, y = ((i / X) | 0) % Y, z = (i / XY) | 0; ups.push(w0[2] + VOX * (x * E[0][2] + y * E[1][2] + z * E[2][2])); }
-  if (ai.classes === 18 && ups.length > 2000) { // only the 18-part models number the cerebellum 5 and 6
+  for (let i = 0; i < N; i += 3) if (cereb && brain[i] && cereb.includes(part[i])) { const x = i % X, y = ((i / X) | 0) % Y, z = (i / XY) | 0; ups.push(w0[2] + VOX * (x * E[0][2] + y * E[1][2] + z * E[2][2])); }
+  if (cereb && ups.length > 2000) {
     ups.sort((a, b) => a - b);
     const floor = ups[Math.floor(ups.length * 0.02)] - (mr.stump ?? 8);
     if ((mr.stump ?? 8) < 30)
