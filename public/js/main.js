@@ -859,8 +859,23 @@ const MR_INPUTS = ['#m-reach', '#m-stiff', '#m-grow', '#m-bottom', '#m-folds', '
 function autoModel(stack = app.volume?.stack) {
   if (!app.gpuOK) return 'classic';
   const kind = stack && stack.series ? scanKind(stack.series) : null;
-  return kind && /T2|PD/.test(kind.name) ? 'classic' : 'partsBig';
+  if (kind && /T2|PD/.test(kind.name)) return 'classic';
+  // Home-trained models say what they are best at (`auto` in models/own/index.json; the first
+  // of a kind in the list wins): "study" for thick slices when the study has more series,
+  // "scout" for a low-detail overview scan, "single" for either of those when nothing fits better.
+  // A sharp scan (about 1 mm) stays with the 18-part model, which was trained on such scans.
+  const shape = scanShape(stack), own = Object.values(OWN), pick = (use) => own.find((m) => m.auto === use);
+  const m = shape === 'thick' ? (studyPartners(stack).length && pick('study')) || pick('single') : shape === 'scout' ? pick('scout') || pick('single') : null;
+  return m ? m.key : 'partsBig';
 }
+/** 'thick' (slices 3 mm or more apart and much coarser than within a slice), 'scout' (1.2 mm or coarser all round), 'fine', or '' when not known yet. */
+function scanShape(stack) {
+  const v = stack && stack.volume;
+  if (!v) return '';
+  const hi = Math.max(...v.spacing), lo = Math.min(...v.spacing);
+  return hi >= 3 && hi / lo >= 2.5 ? 'thick' : hi >= 1.2 ? 'scout' : 'fine';
+}
+const AUTO_WHY = { thick: 'Picked for this scan because its slices are far apart.', scout: 'Picked for this scan because it is a low-detail overview scan.' };
 /** The brain finder in use: the dropdown's choice, with "Auto" worked out. */
 function chosenModel(stack = app.volume?.stack) { const v = $('#m-model').value; return v === 'auto' ? autoModel(stack) : v; }
 const AI_DEFAULT = { level: 0, grow: 0, stump: 8, study: 0 };
@@ -919,9 +934,9 @@ function showMethod() {
   const stack = app.volume?.stack, isMR = !!stack && stack.unit !== 'HU';
   $('#brain-how').style.display = isMR ? '' : 'none';
   const pick = $('#m-model').value, how = chosenModel(stack), ai = how !== 'classic';
-  $('#m-model').options[0].textContent = ai ? 'Auto (AI model)' : 'Auto (classic)';
+  $('#m-model').options[0].textContent = !ai ? 'Auto (classic)' : OWN[how] ? `Auto (${OWN[how].name.replace(/^Home-trained: /, 'home-trained ')})` : 'Auto (AI model)';
   $('#m-model-why').textContent = ai
-    ? `${MODEL_WHY[how] || ''} It runs on this computer’s graphics card; nothing leaves the computer.`
+    ? `${pick === 'auto' && OWN[how] ? (AUTO_WHY[scanShape(stack)] || '') + ' ' : ''}${MODEL_WHY[how] || ''} It runs on this computer’s graphics card; nothing leaves the computer.`
     : pick !== 'auto' ? 'An outline is grown inside the skull and the folds are cut by brightness. Works on any kind of scan.'
       : app.gpuOK ? 'Classic is used for this kind of scan: the AI models were trained on T1-weighted scans. You can still pick one.'
         : 'The AI models need WebGPU (a current Chrome or Edge with a graphics card); the classic method is used here.';

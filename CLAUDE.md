@@ -211,3 +211,11 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   default. On, `assignViews` mirrors the axial and coronal planes, and `StackView.flipped()`
   mirrors 2D pictures whose columns run toward the patient's left; the letters follow by
   themselves. Measurements made in the 3D slice views are mirrored with the picture.
+- Auto and home-trained models (`autoModel`, `scanShape` in `main.js`): an index entry may carry
+  `auto` ("study", "scout" or "single"; set by the trainer's `tools/install.py name "Name" kind`).
+  Auto then picks by the scan's shape: thick slices (3 mm or more apart, 2.5x coarser than in the
+  slice) get the first "study" model when the study has other series, else the first "single";
+  a low-detail scan (1.2 mm or coarser all round, such as a head scout) gets "scout", else
+  "single"; a sharp scan stays with `partsBig`; T2/PD stay classic. The owner's verdicts
+  (2026-11-27): generation 3 is the best on his study's head scout, the study model on its
+  6 mm series. A new model is listed without `auto` until he has judged it.
