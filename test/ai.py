@@ -125,9 +125,9 @@ with sync_playwright() as p:
     page.click("#cmp-more")
     page.wait_for_function("viewscan.compareDone === true && document.querySelectorAll('.cmp-tile').length === %d" % (n_ai + n_cl + 30), timeout=1500000)
     ok(page.evaluate("document.querySelectorAll('.cmp-sec')[0].querySelectorAll('.cmp-tile').length") == n_ai + 15, "“Try 30 more” adds fifteen AI mixes and fifteen classic ones")
-    # home-trained models (only on the computer that trained them) come first in the grid, nine versions each
-    own = page.evaluate("fetch('models/own/index.json').then(r => r.ok ? r.json() : []).then(l => l.length, () => 0)")
-    page.locator(".cmp-sec").nth(0).locator(".cmp-tile").nth(5 + 9 * own).locator("button").first.click()
+    # home-trained models (only on the computer that trained them) come first in the grid: nine versions each, four for a study model
+    own = page.evaluate("fetch('models/own/index.json').then(r => r.ok ? r.json() : []).then(l => l.reduce((n, m) => n + (m.inputs > 1 ? 4 : 9), 0), () => 0)")
+    page.locator(".cmp-sec").nth(0).locator(".cmp-tile").nth(5 + own).locator("button").first.click()
     time.sleep(1)
     ok(page.evaluate("document.getElementById('compare').hidden && document.getElementById('m-model').value === 'partsBig' && Number(document.getElementById('a-level').value) === 2"), "picking an AI version puts its model and settings on the panel")
     ok(not errs, "no errors on the page" + ("" if not errs else ": " + " | ".join(errs[:4])))

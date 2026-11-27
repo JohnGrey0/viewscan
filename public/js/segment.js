@@ -60,8 +60,10 @@ export async function ownModels() {
   return Object.values(OWN);
 }
 let aiLine = Promise.resolve(); // one network at a time: they share one graphics card
-export function brainModel(vol, key, onProgress = () => {}) {
-  const kept = vol.ai || (vol.ai = new Map());
+export function brainModel(vol, key, onProgress = () => {}, others = []) {
+  const kept = vol.ai || (vol.ai = new Map()), model = key;
+  const plain = (v) => ({ nx: v.nx, ny: v.ny, nz: v.nz, data: v.data, origin: v.origin, dx: v.dx, dy: v.dy, dz: v.dz });
+  if (others.length) key = model + '+study'; // a study model with the other series: kept apart from its answer for this series alone
   if (!kept.has(key)) {
     const turn = aiLine;
     const job = turn.then(() => new Promise((resolve, reject) => {
@@ -70,10 +72,10 @@ export function brainModel(vol, key, onProgress = () => {}) {
         const m = ev.data;
         if (m.type === 'progress') return job.report && job.report(m.p, m.text);
         w.terminate();
-        if (m.type === 'done') resolve({ ...m.result, key, cereb: OWN[key] ? OWN[key].cerebellum : m.result.classes === 18 ? [5, 6] : null }); else reject(new Error(m.error));
+        if (m.type === 'done') resolve({ ...m.result, key: model, cereb: OWN[model] ? OWN[model].cerebellum : m.result.classes === 18 ? [5, 6] : null }); else reject(new Error(m.error));
       };
       w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'The brain model stopped unexpectedly')); };
-      w.postMessage({ model: key, def: OWN[key], vol: { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz } });
+      w.postMessage({ model, def: OWN[model], vol: plain(vol), others: others.map(plain) });
     }));
     aiLine = job.catch(() => {});
     job.catch(() => kept.delete(key)); // a failed run may be tried again
@@ -90,6 +92,7 @@ export function brainModel(vol, key, onProgress = () => {}) {
  */
 export function brainAnswer(vol, key, onProgress = () => {}, others = []) {
   if (!others.length) return brainModel(vol, key, onProgress);
+  if (OWN[key] && OWN[key].inputs > 1) return brainModel(vol, key, onProgress, others); // a study model takes the series in itself
   const kept = vol.aiStudy || (vol.aiStudy = new Map());
   if (!kept.has(key)) {
     const n = others.length + 1, geo = (v) => ({ nx: v.nx, ny: v.ny, nz: v.nz, origin: v.origin, dx: v.dx, dy: v.dy, dz: v.dz });

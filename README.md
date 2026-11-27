@@ -206,6 +206,12 @@ runs the model on each series of the study and averages the answers. The overall
 shape gets steadier; folds get softer, because the head moves a little between
 series.
 
+A **study model** (also trained with `viewscan-train`) goes further: it looks at up to
+three series of the study at once, one for each direction the slices can be stacked in.
+Viewscan picks them, lines them up with the scan in view (heads move a degree or two
+between series) and gives them to the model together. It takes about four times as long as
+one series, and the folds come out clearly better on 6 mm studies.
+
 Each has its own fine-tune panel, and the settings of one are not used by the
 other. With a panel open, the slices are tinted with what was found. The mesh
 follows the network's answer closely: in `test/ai.py` 99.7% of the mesh points lie

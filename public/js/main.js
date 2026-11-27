@@ -5,7 +5,7 @@ import { organize, PLANE_LABEL } from './series.js';
 import { Volume, vec } from './volume.js';
 import { GLRenderer } from './glrender.js';
 import { StackView, SliceView, View3D, fmtDate } from './views.js';
-import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainAnswer, ownModels } from './segment.js';
+import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainAnswer, ownModels, OWN } from './segment.js';
 import { saveFolder, removeFolder, loadFolders, updateSummaries, SUMMARY_FORMAT } from './localstore.js';
 
 const $ = (s) => document.querySelector(s);
@@ -117,7 +117,8 @@ ownModels().then((list) => {
     group.append(h('option', { value: m.key }, m.name));
     MODEL_SHORT[m.key] = m.name;
     MODEL_WHY[m.key] = m.why || 'Trained at home with viewscan-train.';
-    AI_VARIANTS.unshift(aiVariant(m.key, { study: 1 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'clean'), aiVariant(m.key, { study: 1, level: 2 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'smooth', 0.7), aiVariant(m.key, {}, 'crisp', 0.7), aiVariant(m.key, {}, 'clean'), aiVariant(m.key, { level: 2 }, 'crisp', 0.7), aiVariant(m.key, { level: -2 }, 'crisp', 0.7), aiVariant(m.key, {}, 'smooth', 0.7));
+    if (m.inputs > 1) AI_VARIANTS.unshift(aiVariant(m.key, {}, 'crisp', 0.7), aiVariant(m.key, {}, 'clean'), aiVariant(m.key, { level: 2 }, 'crisp', 0.7), aiVariant(m.key, {}, 'smooth', 0.7));
+    else AI_VARIANTS.unshift(aiVariant(m.key, { study: 1 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'clean'), aiVariant(m.key, { study: 1, level: 2 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'smooth', 0.7), aiVariant(m.key, {}, 'crisp', 0.7), aiVariant(m.key, {}, 'clean'), aiVariant(m.key, { level: 2 }, 'crisp', 0.7), aiVariant(m.key, { level: -2 }, 'crisp', 0.7), aiVariant(m.key, {}, 'smooth', 0.7));
     OWN_KEYS.push(m.key);
   }
   $('#m-model').insertBefore(group, $('#m-model').children[1]);
@@ -752,7 +753,9 @@ function autoModel(stack = app.volume?.stack) {
 function chosenModel(stack = app.volume?.stack) { const v = $('#m-model').value; return v === 'auto' ? autoModel(stack) : v; }
 const AI_DEFAULT = { level: 0, grow: 0, stump: 8, study: 0 };
 const readAiRaw = () => ({ level: Number($('#a-level').value), grow: Number($('#a-grow').value), stump: Number($('#a-stump').value), study: $('#a-study').checked ? 1 : 0 });
-const aiFromRaw = (model, a) => ({ model, folds: a.level / 5, grow: a.grow, stump: a.stump, study: a.study ? 1 : 0 });
+// a study model (one that takes several series in at once) always looks at the other series
+const studyModel = (model) => !!(OWN[model] && OWN[model].inputs > 1);
+const aiFromRaw = (model, a) => ({ model, folds: a.level / 5, grow: a.grow, stump: a.stump, study: a.study || studyModel(model) ? 1 : 0 });
 // The other series of the same study that a brain model can also look at (see brainAnswer):
 // every MRI series that is a proper volume, except maps and overviews that do not show anatomy.
 const STUDY_SKIP = /DIFF|DWI|ADC|TRACE|PERF|LOCAL|MIP|SWI|PHASE/i;
@@ -783,7 +786,7 @@ async function studyVolumes(stack, say = () => {}) {
 function showAi(a) {
   const out = (id, text) => { $(id).parentElement.querySelector('output').textContent = text; };
   $('#a-level').value = a.level; $('#a-grow').value = a.grow; $('#a-stump').value = a.stump; $('#a-study').checked = !!a.study;
-  $('#a-study-row').style.display = studyPartners(app.volume?.stack).length ? '' : 'none';
+  $('#a-study-row').style.display = studyPartners(app.volume?.stack).length && !studyModel($('#m-model').value) ? '' : 'none';
   out('#a-level', a.level === 0 ? 'normal' : a.level > 0 ? `stricter +${a.level}` : `looser ${a.level}`);
   out('#a-grow', a.grow === 0 ? 'none' : `${a.grow > 0 ? '+' : ''}${a.grow} mm`);
   out('#a-stump', a.stump >= 30 ? 'all of it' : `${a.stump} mm`);
@@ -949,7 +952,7 @@ function pumpPreview() {
         st.preview = { labels: labelVolume(m.labels, m.dims, m.grid) };
         st.mrUsed = m.used || st.mrUsed;
         showMr(readMrRaw());
-        pvStatus(m.used ? `Brain: about ${Math.round(m.ml / 10) * 10} mL${m.note ? '. ' + m.note : ''}` : m.note);
+        pvStatus(m.used ? `Brain: about ${Math.round(m.ml / 10) * 10} mL${m.used.model && preview.series > 1 ? `, from ${preview.series} series of this study` : ''}${m.note ? '. ' + m.note : ''}` : m.note);
         app.previewCount = (app.previewCount || 0) + 1;
         app.redrawAll();
       } else if (m.type === 'error') {
@@ -968,7 +971,7 @@ function pumpPreview() {
     const say = (text) => { if (app.volume === vol) pvStatus(text); };
     (mr.study ? studyVolumes(stack, say) : Promise.resolve([]))
       .then((others) => brainAnswer(vol, mr.model, (p, text) => say(text), others))
-      .then((ai) => { if (app.volume !== vol) { preview.busy = false; return pumpPreview(); } sendPreview(vol, stack, mr, ai); })
+      .then((ai) => { if (app.volume !== vol) { preview.busy = false; return pumpPreview(); } preview.series = ai.study ? ai.study.used : 1; sendPreview(vol, stack, mr, ai); })
       .catch((err) => { preview.busy = false; pvStatus(`The AI model could not run (${err.message}). Pick “Classic” under “Brain finder”.`); });
     return;
   }
@@ -1199,7 +1202,8 @@ function variantWhy(v) {
   if (v.model === 'parts') bits.push('the smaller neural network'); else if (v.model === 'tissue') bits.push('the network that only knows gray and white matter');
   else if (v.model === 'partsBig') bits.push('neural network on the graphics card');
   else if (!v.model && !Object.keys(s).length) bits.push('classic method: outline, and folds by brightness');
-  if (v.ai && v.ai.study) bits.push('the model looked at every series of the study and its answers were merged');
+  if (studyModel(v.model)) bits.push('the model looks at up to three series of the study at once, lined up first');
+  else if (v.ai && v.ai.study) bits.push('the model looked at every series of the study and its answers were merged');
   if (v.ai && v.ai.level) bits.push(v.ai.level > 0 ? 'it must be surer that a spot is brain, which opens the folds' : 'it may be less sure that a spot is brain, which fills the folds in');
   if (v.ai && v.ai.grow) bits.push(v.ai.grow > 0 ? `padded ${v.ai.grow} mm all round` : `shaved ${-v.ai.grow} mm all round`);
   if (v.ai && v.ai.stump !== undefined) bits.push(v.ai.stump >= 30 ? 'all of the brain stem the model found is kept' : `${v.ai.stump} mm of brain stem kept below the cerebellum`);

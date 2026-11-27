@@ -169,9 +169,18 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   `mergeAnswers` in `brainnet.js`): the model runs on every usable series, answers
   are shifted to the base series' cube and averaged. Off by default: on a real
   study the head had turned up to 2 degrees between series and the average blurred
-  the folds. A three-input "study" model (one input per slice direction) scored
-  better in the trainer on simulated studies; Viewscan cannot feed it yet (needs
-  multi-channel input in `runModel` and real registration between series).
+  the folds.
+- Study models (`inputs: 3` in the index entry; `runStudy`, `alignProb`, `movedCube` in
+  `brainnet.js`): one input per slice direction (0 side to side, 1 top to bottom, 2 front
+  to back; `stackAxis`). `brainModel` passes the other series' volumes to the worker;
+  `runStudy` keeps one partner per free direction (finest in-plane, then thinnest), runs
+  the model on each series alone, lines the partner's "how sure" cube up with the base's
+  (Gauss-Newton turn + shift, 8/4/2 mm), re-conforms the partner in the moved cube and
+  runs all inputs together. Lining up is not optional: measured in the trainer, 1 degree
+  off loses the whole gain and 2 degrees is worse than one series. A partner that will
+  not fit (overlap under 0.6, over 20 degrees or 40 mm) is left out. `main.js` forces
+  `study` on for these models (`studyModel`) and hides the "every series" checkbox.
+  `forward()` is the plain graphics-card run shared with one-input models.
 - An experiment that cut deeper folds as thin slits and found the gap between the
   halves as a curved sheet was dropped at the owner's request in favor of the
   models (the sheet-based split was clean; the slits came out ragged).
