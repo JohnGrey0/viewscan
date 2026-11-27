@@ -49,6 +49,26 @@
   <main id="views"></main>
 
   <aside id="panel3d">
+    <section id="fix-panel" hidden>
+      <h3>Fix the brain by hand</h3>
+      <p class="hint">Paint on any of the three slice pictures where the colored brain is wrong, then update the 3D model. The mouse wheel moves through the slices; the <b>T</b> key turns the colors off and on, so you can see the scan underneath.</p>
+      <div class="seg wide" id="fix-mode">
+        <button data-v="1" class="on" title="Paint where brain is missing (green)">This is brain</button>
+        <button data-v="2" title="Paint where something that is not brain was colored in: fluid in a fold, skull, membrane (orange)">Not brain</button>
+        <button data-v="0" title="Take your own marks away again">Rub out</button>
+      </div>
+      <div class="seg wide" id="fix-shape">
+        <button data-v="brush" class="on" title="Drag to paint with a round brush">Brush</button>
+        <button data-v="lasso" title="Draw a line around an area; everything inside it is marked">Draw around</button>
+      </div>
+      <label class="row" id="fix-size-row" title="Keys [ and ] also change it"><span>Brush size</span><input type="range" id="fix-size" min="1" max="40" step="1" value="8"><output id="fix-size-out"></output></label>
+      <div class="chips">
+        <button id="fix-undo" title="Take back the last stroke (Ctrl+Z)">Undo</button>
+        <button id="fix-clear" title="Take away every mark on this series. Undo brings them back.">Remove all marks</button>
+      </div>
+      <button class="btn primary big" id="fix-build" title="Builds the 3D models again; your marks win over the brain finder">Update the 3D model</button>
+      <div id="fix-status" class="hint"></div>
+    </section>
     <section>
       <h3>3D view</h3>
       <div class="seg wide" id="r3-show"><button data-v="volume" class="on">Scan</button><button data-v="models">Models</button></div>

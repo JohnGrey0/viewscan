@@ -7,6 +7,7 @@ import { GLRenderer } from './glrender.js';
 import { StackView, SliceView, View3D, fmtDate } from './views.js';
 import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainAnswer, ownModels, OWN } from './segment.js';
 import { saveFolder, removeFolder, loadFolders, updateSummaries, SUMMARY_FORMAT } from './localstore.js';
+import { newFix, beginStroke, endStroke, brush, lasso, undo as undoFix, clearAll as clearFix, slicesMarked, saveFix, loadFix, fixStore } from './fixes.js';
 
 const $ = (s) => document.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -36,6 +37,7 @@ const ICONS = {
   pause: icon('<path d="M8 5v14M16 5v14"/>'),
   shot: icon('<rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8.5 7 10 4h4l1.5 3"/>'),
   trash: icon('<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>'),
+  fix: icon('<path d="M4 20l1-4.5L16.5 4a2.1 2.1 0 0 1 3 3L8 18.5z"/><path d="M14.5 6l3 3"/>'),
   eye: icon('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/>'),
 };
 
@@ -51,6 +53,28 @@ const app = {
   r3d: { show: 'volume', mode: 'surface', iso: 300, color: [0.93, 0.89, 0.8] },
   cut: { axis: '', pos: 0.5 }, showOverlay: true,
   gl: null, volume: null, cine: 0, fps: 12,
+  // the "Fix brain" tool: mode 1 = brain, 2 = not brain, 0 = rub out; size is the brush's width in mm
+  fixState: { mode: 1, shape: 'brush', size: 8, path: null, view: null },
+  /** The hand-made marks to draw on the slices; the T key hides them together with the model colors. */
+  fixShown() { const f = this.volume && this.volume.stack.fix; return f && this.showOverlay ? f : null; },
+  fixPaint(view, w0, w1, first) {
+    const vol = this.volume, st = this.fixState;
+    if (!vol) return;
+    const fix = vol.stack.fix || (vol.stack.fix = newFix(vol));
+    if (first && !this.showOverlay) toggleOverlay(); // painting with the colors off would be painting blind
+    if (first) { beginStroke(fix); st.view = view; st.path = st.shape === 'lasso' ? [w1] : null; }
+    if (!fix.stroke) return;
+    if (st.path) { if (!first) st.path.push(w1); }
+    else { brush(vol, fix, view.g, w0 || w1, w1, st.size / 2, st.mode); fix.version++; }
+    this.redrawAll();
+  },
+  fixEnd(view) {
+    const vol = this.volume, st = this.fixState, fix = vol && vol.stack.fix;
+    if (!fix) return;
+    if (st.path) { if (st.path.length > 2) lasso(vol, fix, view.g, st.path, st.mode); st.path = null; }
+    endStroke(fix);
+    fixChanged();
+  },
 
   activate(v) {
     if (this.active === v) return;
@@ -403,8 +427,8 @@ function setMode(mode) {
 function applyMode() {
   $('#app').className = `mode-${app.mode}`;
   for (const b of document.querySelectorAll('#mode-switch button')) b.classList.toggle('on', b.dataset.mode === app.mode);
-  if (app.mode === '3d' && !['scroll', 'wl', 'pan', 'zoom', 'cross', 'length', 'angle', 'roi'].includes(app.tool)) app.tool = 'cross';
-  if (app.mode !== '3d' && app.tool === 'cross') app.tool = 'scroll';
+  if (app.mode === '3d' && !['scroll', 'wl', 'pan', 'zoom', 'cross', 'length', 'angle', 'roi', 'fix'].includes(app.tool)) app.tool = 'cross';
+  if (app.mode !== '3d' && (app.tool === 'cross' || app.tool === 'fix')) app.tool = 'scroll';
   else if (app.mode === '3d' && app.tool === 'scroll' && !app.toolPicked) app.tool = 'cross';
   buildViews(); buildToolbar(); markActiveSeries();
 }
@@ -431,6 +455,13 @@ async function open3D(stack) {
   app.setFocus(vol.center);
   setup3DPanel();
   markActiveSeries(); updateToolbar(); syncPreset();
+  // marks made by hand on an earlier visit come back with the series
+  if (!stack.fix && !stack.fixAsked) {
+    stack.fixAsked = true;
+    fixStore.server = app.sources.has('server');
+    loadFix(stack, vol).then((fix) => { if (fix && !stack.fix) { stack.fix = fix; if (app.volume === vol) { showFix(); app.redrawAll(); } } }).catch(() => {});
+  }
+  showFix();
 }
 
 // ------------------------------------------------------------- toolbar -----
@@ -489,12 +520,13 @@ function buildToolbar() {
     const tint = act('tint', 'Colors', 'Show or hide the colors on the slices (the pink brain and the other models), to see the scan itself (T)', toggleOverlay);
     tint.id = 'btn-tint';
     bar.append(sep(), tint);
+    bar.append(tool('fix', 'Fix brain', 'Paint on the slices where the brain is colored in wrongly, then update the 3D model', 'F'));
   }
   bar.append(sep(), act('shot', 'Save picture', 'Save the selected panel as a PNG image', screenshot));
   updateToolbar();
   syncPreset();
 }
-function setTool(id) { app.tool = id; app.toolPicked = true; updateToolbar(); }
+function setTool(id) { app.tool = id; app.toolPicked = true; updateToolbar(); app.redrawAll(); }
 function toggleOverlay() {
   app.showOverlay = !app.showOverlay;
   store.set('overlay', app.showOverlay ? '1' : '');
@@ -503,12 +535,58 @@ function toggleOverlay() {
   app.redrawAll();
 }
 function updateToolbar() {
+  const fixing = app.mode === '3d' && app.tool === 'fix';
+  $('#fix-panel').hidden = !fixing;
+  $('#app').classList.toggle('tool-fix', fixing);
+  if (fixing) showFix();
   const tint = $('#btn-tint');
   if (tint) { tint.classList.toggle('toggled', app.showOverlay); tint.querySelector('span').textContent = app.showOverlay ? 'Colors on' : 'Colors off'; }
   for (const b of document.querySelectorAll('#toolbar [data-tool]')) b.classList.toggle('on', b.dataset.tool === app.tool);
   const play = $('#btn-play');
   if (play) { play.innerHTML = `${app.cine ? ICONS.pause : ICONS.play}<span>${app.cine ? 'Pause' : 'Play'}</span>`; play.classList.toggle('toggled', !!app.cine); }
 }
+// ---- marks made by hand ("Fix brain"; fixes.js) ----
+let fixSaveTimer = 0;
+function showFix() {
+  const st = app.fixState, stack = app.volume?.stack, fix = stack?.fix;
+  for (const b of document.querySelectorAll('#fix-mode button')) b.classList.toggle('on', Number(b.dataset.v) === st.mode);
+  for (const b of document.querySelectorAll('#fix-shape button')) b.classList.toggle('on', b.dataset.v === st.shape);
+  $('#fix-size').value = st.size; $('#fix-size-out').textContent = `${st.size} mm`;
+  $('#fix-size-row').style.display = st.shape === 'brush' ? '' : 'none';
+  $('#fix-undo').disabled = !(fix && fix.undo.length);
+  $('#fix-clear').disabled = !(fix && fix.count);
+  const box = $('#fix-status');
+  const n = fix && fix.count ? slicesMarked(fix) : 0;
+  const todo = !!fix && fix.version !== fix.built && (fix.count > 0 || fix.built > 0) && !!stack.models;
+  box.classList.toggle('todo', todo);
+  box.textContent = !fix || (!fix.count && !fix.undo.length) ? 'No marks on this series yet.'
+    : `${n ? `Marks on ${n} slice${n === 1 ? '' : 's'}` : 'No marks left'}${fix.saved ? ` · saved ${fix.where === 'browser' ? 'in this browser' : 'on this computer'}` : ''}.`
+      + (todo ? ' The 3D model does not have your latest marks yet.' : stack.models && fix.built === fix.version && n ? ' They are in the 3D model.' : '');
+}
+function fixChanged() {
+  const vol = app.volume;
+  if (!vol) return;
+  const stack = vol.stack, fix = stack.fix;
+  showFix(); app.redrawAll();
+  clearTimeout(fixSaveTimer);
+  fixStore.server = app.sources.has('server');
+  if (fix && !fix.saved) fixSaveTimer = setTimeout(() => {
+    saveFix(stack, vol, fix).then((where) => { fix.where = where; if (app.volume === vol) showFix(); })
+      .catch((err) => { if (app.volume === vol) $('#fix-status').textContent = 'Your marks could not be saved: ' + err.message; });
+  }, 900);
+}
+function initFix() {
+  const st = app.fixState;
+  for (const b of document.querySelectorAll('#fix-mode button')) b.onclick = () => { st.mode = Number(b.dataset.v); showFix(); app.redrawAll(); };
+  for (const b of document.querySelectorAll('#fix-shape button')) b.onclick = () => { st.shape = b.dataset.v; showFix(); app.redrawAll(); };
+  $('#fix-size').oninput = (e) => { st.size = Number(e.target.value); showFix(); app.redrawAll(); };
+  $('#fix-undo').onclick = fixUndo;
+  $('#fix-clear').onclick = () => { const fix = app.volume?.stack.fix; if (fix && fix.count) { clearFix(fix); fixChanged(); } };
+  $('#fix-build').onclick = () => build();
+}
+function fixUndo() { const fix = app.volume?.stack.fix; if (fix && undoFix(fix)) fixChanged(); }
+function fixSize(by) { const st = app.fixState; st.size = Math.max(1, Math.min(40, st.size + by)); showFix(); app.redrawAll(); }
+
 function currentStack() { return app.mode === '3d' ? app.volume?.stack : (app.active?.stack || app.views.find((v) => v.stack)?.stack); }
 function withStackView(fn) { const v = app.active && app.active.kind === 'stack' ? app.active : null; if (v && v.stack) fn(v); }
 
@@ -671,7 +749,8 @@ function renderModels() {
       it.mesh && h('div', { class: 'acts' },
         h('input', { type: 'range', min: 5, max: 100, value: Math.round(it.opacity * 100), title: 'See-through', oninput: (e) => { it.opacity = e.target.value / 100; app.redrawAll(); } }),
         h('button', { class: 'btn', title: 'Save as STL (for 3D printing), in millimeters', onclick: () => saveModel(it, 'stl') }, 'STL'),
-        h('button', { class: 'btn', title: 'Save as OBJ', onclick: () => saveModel(it, 'obj') }, 'OBJ'))));
+        h('button', { class: 'btn', title: 'Save as OBJ', onclick: () => saveModel(it, 'obj') }, 'OBJ'),
+        it.key === 'brain' && h('button', { class: 'btn', title: 'Paint on the slices where the brain is colored in wrongly, then update the 3D model', onclick: () => setTool('fix') }, 'Fix by hand'))));
   }
 }
 /** Which brain finder made a brain model: shown under it, so a good result can be traced back. */
@@ -1542,7 +1621,10 @@ async function build() {
   try {
     const opts = buildOptions(stack, keys, readMr());
     if (opts.mr.study && opts.mr.model !== 'classic') opts.others = await studyVolumes(stack, (text) => setProg(0, text));
+    const fix = stack.fix && stack.fix.count ? stack.fix : null, fixVersion = fix ? fix.version : 0;
+    if (fix && keys.includes('brain')) opts.fix = { data: fix.data };
     const result = await buildModels(vol, opts, setProg);
+    if (stack.fix) stack.fix.built = stack.fix === fix ? fixVersion : stack.fix.version;
     const prev = stack.models;
     if (prev) for (const it of prev.items) if (it.mesh) app.gl.freeMesh(it.mesh);
     const old = new Map((prev?.items || []).map((i) => [i.key, i]));
@@ -1557,9 +1639,10 @@ async function build() {
     pvStatus('');
     app.lastUsed = result.used || null;
     if (result.used) { stack.mrUsed = result.used; if (app.volume && app.volume.stack === stack) showMr(readMrRaw()); }
-    app.lastBuild = { seconds: result.seconds, ...result.timing, parts: Object.fromEntries(result.items.map((i) => [i.key, i.seconds])) };
+    app.lastBuild = { seconds: result.seconds, fixed: result.fixed || 0, ...result.timing, parts: Object.fromEntries(result.items.map((i) => [i.key, i.seconds])) };
     setProg(1, `Done in ${result.seconds.toFixed(1)} s`);
     renderModels();
+    showFix();
     setR3('show', 'models');
   } catch (err) {
     console.error(err);
@@ -1714,7 +1797,7 @@ async function entriesToFiles(items) {
 
 // --------------------------------------------------------------- wiring ----
 function init() {
-  buildViews(); buildToolbar();
+  buildViews(); buildToolbar(); initFix();
   for (const b of document.querySelectorAll('#mode-switch button')) b.onclick = () => setMode(b.dataset.mode);
   $('#btn-details').onclick = showDetails;
   $('#btn-help').onclick = showHelp;
@@ -1791,6 +1874,7 @@ function init() {
   });
 
   window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && app.mode === '3d' && app.tool === 'fix' && !e.target.matches('input, select, textarea')) { fixUndo(); e.preventDefault(); return; }
     if (e.target.matches('input, select, textarea') || e.ctrlKey || e.metaKey || e.altKey || $('#dialog').open) return;
     const v = app.active;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -1804,6 +1888,8 @@ function init() {
     else if (k === 'r') resetView();
     else if (k === 'i') invert();
     else if (k === 't' && app.mode === '3d') toggleOverlay();
+    else if (k === 'f' && app.mode === '3d') setTool('fix');
+    else if ((k === '[' || k === ']') && app.tool === 'fix') fixSize(k === ']' ? 1 : -1);
     else if (k === 'Delete' || k === 'Backspace') {
       const s = currentStack();
       if (s && app.selected) { const i = s.annots.indexOf(app.selected); if (i >= 0) s.annots.splice(i, 1); app.selected = null; app.redrawAll(); }

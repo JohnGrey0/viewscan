@@ -146,7 +146,7 @@ export function gpuReady() {
  * @param {(fraction:number, text:string)=>void} onProgress
  */
 export function buildModels(vol, optsIn, onProgress) {
-  const { others, ...opts } = optsIn; // other series of the study (volumes): used here, not sent to the workers
+  const { others, fix, ...opts } = optsIn; // other series of the study (volumes) and marks made by hand: used here, not sent to every worker
   const t0 = performance.now();
   const workers = [];
   const stop = () => { for (const w of workers) w.terminate(); };
@@ -182,7 +182,7 @@ export function buildModels(vol, optsIn, onProgress) {
     const seg = await run({
       type: 'segment',
       vol: { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz, basis: vol.basis },
-      opts: segOpts, ports: segPorts,
+      opts: fix ? { ...segOpts, fix } : segOpts, ports: segPorts,
     }, segPorts, (m) => onProgress(ai ? 0.3 + m.p * 0.4 : m.p * 0.75, m.text));
     if (aiNote) for (const pt of seg.parts) if (pt.key === 'brain') pt.note = pt.note ? aiNote + ' ' + pt.note : aiNote;
 
@@ -219,6 +219,7 @@ export function buildModels(vol, optsIn, onProgress) {
       labels: labelVolume(labels, seg.dims, seg.grid),
       items: results.map((r) => r.item).sort((a, b) => a.bit - b.bit),
       notes: seg.notes,
+      fixed: seg.fixed || 0, // working-grid voxels set by marks made by hand
       used: seg.used && { ...seg.used, series: ai && ai.study ? ai.study.used : 1 },
       seconds: (performance.now() - t0) / 1000,
       timing: { findParts: (tSeg - t0) / 1000, buildParts: (performance.now() - tSeg) / 1000, threads: pool.length + 1 },
