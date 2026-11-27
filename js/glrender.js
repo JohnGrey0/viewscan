@@ -30,6 +30,7 @@ in vec2 vUV; out vec4 o;
 uniform vec3 uCenter, uU, uV, uN; uniform vec2 uSize;
 uniform float uWC, uWW, uSlab; uniform int uInvert, uSlabMode, uSlabN;
 uniform usampler3D uLab; uniform int uHasLab; uniform mat4 uW2L; uniform ivec3 uLabDims; uniform vec4 uLabCol[8];
+uniform usampler3D uFix; uniform int uHasFix;
 void main(){
   vec2 px = (vUV - 0.5) * uSize;
   vec3 P = uCenter + px.x * uU + px.y * uV;
@@ -57,6 +58,14 @@ void main(){
     if (all(greaterThanEqual(lp, ivec3(0))) && all(lessThan(lp, uLabDims))) {
       uint l = texelFetch(uLab, lp, 0).r;
       for (int b = 0; b < 8; b++) if ((l & (1u << uint(b))) != 0u) c = mix(c, uLabCol[b].rgb, uLabCol[b].a);
+    }
+  }
+  if (uHasFix == 1) {
+    // marks made by hand, on the scan's own grid: green = brain, orange = not brain
+    ivec3 fp = ivec3(floor(i0 + 0.5));
+    if (all(greaterThanEqual(fp, ivec3(0))) && all(lessThan(fp, uDims))) {
+      uint f = texelFetch(uFix, fp, 0).r;
+      if (f == 1u) c = mix(c, vec3(0.2, 0.95, 0.4), 0.55); else if (f == 2u) c = mix(c, vec3(1.0, 0.55, 0.1), 0.55);
     }
   }
   o = vec4(c, 1.0);
@@ -155,10 +164,11 @@ export class GLRenderer {
     this.progs = {};
     this.vol = null; this.volTex = null; this.volFloat = false;
     this.lab = null; this.labTex = null;
+    this.fix = null; this.fixTex = null;
     this.meshBuf = new WeakMap();
     this.vao = gl.createVertexArray();
     this.maxTex = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE);
-    this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.vol = null; this.lab = null; this.progs = {}; });
+    this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.vol = null; this.lab = null; this.fix = null; this.progs = {}; });
   }
   prog(kind) {
     const key = kind + (this.volFloat ? 'F' : 'I');
@@ -202,6 +212,24 @@ export class GLRenderer {
     for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, p, gl.CLAMP_TO_EDGE);
     gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8UI, lab.dims[0], lab.dims[1], lab.dims[2], 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, lab.data);
     this.lab = lab; this.labVersion = lab.version;
+  }
+
+  /** Marks made by hand (fixes.js): { data: Uint8Array, dims, version } on the volume's own grid, or null. */
+  setFix(fix) {
+    const gl = this.gl;
+    if (!fix) { this.fix = null; return; }
+    if (this.fix === fix && this.fixVersion === fix.version) return;
+    gl.activeTexture(gl.TEXTURE2);
+    if (this.fix !== fix || !this.fixTex) {
+      if (this.fixTex) gl.deleteTexture(this.fixTex);
+      this.fixTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_3D, this.fixTex);
+      for (const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_3D, p, gl.NEAREST);
+      for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, p, gl.CLAMP_TO_EDGE);
+    } else gl.bindTexture(gl.TEXTURE_3D, this.fixTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8UI, fix.dims[0], fix.dims[1], fix.dims[2], 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, fix.data);
+    this.fix = fix; this.fixVersion = fix.version;
   }
 
   begin(w, h) {
@@ -253,6 +281,11 @@ export class GLRenderer {
       gl.uniform3i(u.uLabDims, lab.dims[0], lab.dims[1], lab.dims[2]);
       gl.uniform4fv(u.uLabCol, p.labelColors);
     }
+    const fix = this.fix && this.fix.dims[0] === this.vol.nx && this.fix.dims[1] === this.vol.ny && this.fix.dims[2] === this.vol.nz ? this.fix : null;
+    gl.uniform1i(u.uHasFix, fix ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_3D, fix ? this.fixTex : null);
+    gl.uniform1i(u.uFix, 2);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.blit(ctx, w, h);
   }
