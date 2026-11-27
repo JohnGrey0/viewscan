@@ -47,7 +47,7 @@ ok(neck.unwrapped.length === 0, 'a head cut off at the bottom of the box is not 
 // 3b. the scanner blanked the planes at the edges of its box: no slit is left where the piece rejoins
 const blanked = new Volume(stack(-100, false, true));
 const along = [-96, -98, -100, -102, -104, -106].map((y) => Math.round(blanked.sample([0, y, -10])));
-ok(blanked.unwrapped.length === 1 && along.every((v) => v > 400), `blank edge planes are filled in, the nose has no slit (${along.join(' ')})`);
+ok(blanked.unwrapped.length === 1 && along.every((v) => v > 400), `with blank edge planes the piece is moved up against the face, no slit (${along.join(' ')})`);
 
 // 4. switched off
 display.unwrap = false;
