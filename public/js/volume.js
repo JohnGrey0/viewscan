@@ -109,7 +109,10 @@ export class Volume {
       let first = 0, last = n - 1;
       while (first < n && empty(first)) first++;
       while (last > first && empty(last)) last--;
-      const edge = Math.max(2, Math.round(n * 0.02));
+      // a half-blanked plane next to them (far less tissue than its inner neighbor) counts as blank too
+      for (let t = 0; t < 2 && first < last - 2 && prof[first] < 0.3 * prof[first + 1]; t++) first++;
+      for (let t = 0; t < 2 && last > first + 2 && prof[last] < 0.3 * prof[last - 1]; t++) last--;
+      const edge = Math.max(3, Math.round(n * 0.025));
       if (first > edge || n - 1 - last > edge) continue;
       let g0 = 0, g1 = -1;
       for (let i = first, s = -1; i <= last + 1; i++) {
@@ -128,6 +131,15 @@ export class Volume {
         const shift = k * stride;
         out.set(data.subarray(base + shift, base + block), base);
         out.set(data.subarray(base, base + shift), base + block - shift);
+      }
+      // The scanner blanks a plane or two at each edge of its box, which would leave a thin empty
+      // slit where the piece rejoins. Those planes are filled in from their two neighbors.
+      const pa = ((last - k) % n + n) % n, pb = ((first - k) % n + n) % n, blank = pb - pa - 1;
+      if (blank > 0 && blank <= 2 * edge) {
+        for (let base = 0; base < out.length; base += block) for (let o = 0; o < stride; o++) {
+          const va = out[base + o + pa * stride], vb = out[base + o + pb * stride];
+          for (let t = 1; t <= blank; t++) out[base + o + (pa + t) * stride] = va + (vb - va) * t / (blank + 1);
+        }
       }
       data = out;
       const by = high < low ? k - n : k; // the stray piece was at the high end: it belongs before the first plane

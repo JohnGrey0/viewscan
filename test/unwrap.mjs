@@ -14,14 +14,14 @@ function head(x, y, z) {
   return 8;
 }
 /** A stack whose measured box starts at `front` mm (y of the first row); what lies outside the box wraps around. */
-function stack(front, neckCut = false) {
+function stack(front, neckCut = false, blankEdges = false) {
   const buffer = new Int16Array(NX * NY * NZ), boxY = NY * PS;
   for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
     const x = (i - NX / 2) * PS, z = (k - NZ / 2) * PS + (neckCut ? 40 : 0), yIn = front + j * PS;
     // the scanner cannot tell y from y + box or y - box: all of them land in this voxel
     let v = 0;
     for (const y of [yIn - boxY, yIn, yIn + boxY]) v = Math.max(v, head(x, y, z));
-    buffer[(k * NY + j) * NX + i] = v;
+    buffer[(k * NY + j) * NX + i] = blankEdges && (j === 0 || j >= NY - 2) ? 0 : v; // some scanners blank the outermost planes
   }
   const frames = Array.from({ length: NZ }, (_, k) => ({ ipp: [-(NX / 2) * PS, front, (k - NZ / 2) * PS], iop: [1, 0, 0, 0, 1, 0], ps: [PS, PS] }));
   return { cols: NX, rows: NY, n: NZ, buffer, frames, desc: { ps: [PS, PS], layout: 'regular' }, unit: '', uid: 1 };
@@ -43,6 +43,11 @@ ok(whole.unwrapped.length === 0 && whole.origin[1] === -130, 'a scan that fits i
 // 3. the box cuts through the neck at the bottom (tissue at one end only): nothing to do
 const neck = new Volume(stack(-130, true));
 ok(neck.unwrapped.length === 0, 'a head cut off at the bottom of the box is not taken for wrap-around');
+
+// 3b. the scanner blanked the planes at the edges of its box: no slit is left where the piece rejoins
+const blanked = new Volume(stack(-100, false, true));
+const along = [-96, -98, -100, -102, -104, -106].map((y) => Math.round(blanked.sample([0, y, -10])));
+ok(blanked.unwrapped.length === 1 && along.every((v) => v > 400), `blank edge planes are filled in, the nose has no slit (${along.join(' ')})`);
 
 // 4. switched off
 display.unwrap = false;
