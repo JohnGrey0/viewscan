@@ -206,3 +206,8 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   `cutfollow`; the owner asked): `clipPlane()` then returns the plane of the slice view
   scrolled last (`app.cut.plane`, set in `SliceView.scroll`) at the current focus, and
   the "Cut away" list and slider are switched off. Unticked, scrolling does not cut.
+- "Left on left" (`#btn-lol`, `display.leftOnLeft` in `volume.js`, pref `leftonleft`; the owner
+  found the hospital layout confusing: patient's left on the right of the screen). Off by
+  default. On, `assignViews` mirrors the axial and coronal planes, and `StackView.flipped()`
+  mirrors 2D pictures whose columns run toward the patient's left; the letters follow by
+  themselves. Measurements made in the 3D slice views are mirrored with the picture.

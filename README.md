@@ -218,6 +218,12 @@ follows the network's answer closely: in `test/ai.py` 99.7% of the mesh points l
 on the surface the network found. A network takes about 3 to 8 seconds on a
 recent graphics card, once per series; other settings then reuse its answer.
 
+## Left and right on the pictures
+
+Hospitals draw top-down and front pictures as if facing the patient, so the patient's left
+is on the right of the screen (the L and R letters at the edges say which side is which).
+**Left on left** in the toolbar mirrors those pictures, so left is on the left.
+
 ## Cut the model open while scrolling
 
 Under the list of 3D models, tick **Cut the model open at the slice I scroll to**. The 3D

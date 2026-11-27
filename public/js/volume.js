@@ -21,6 +21,9 @@ function inv3(c0, c1, c2) {
 
 const AXES = { SAG: [1, 0, 0], COR: [0, 1, 0], AX: [0, 0, 1] };
 // preferred screen-right / screen-down directions per anatomical view
+// How pictures are laid out. Hospitals draw top-down and front pictures with the patient's left on the
+// right of the screen (as if facing the patient); leftOnLeft mirrors those two, letters included.
+export const display = { leftOnLeft: false };
 const SCREEN = { AX: [[1, 0, 0], [0, 1, 0]], COR: [[1, 0, 0], [0, 0, -1]], SAG: [[0, 1, 0], [0, 0, -1]] };
 
 export class Volume {
@@ -125,7 +128,8 @@ export class Volume {
     names.forEach((name, k) => {
       const ni = best.perm[k];
       const others = [0, 1, 2].filter((x) => x !== ni);
-      const [wantU, wantV] = SCREEN[name];
+      let [wantU, wantV] = SCREEN[name];
+      if (display.leftOnLeft && name !== 'SAG') wantU = mul(wantU, -1);
       const ui = Math.abs(dot(b[others[0]], wantU)) >= Math.abs(dot(b[others[1]], wantU)) ? others[0] : others[1];
       const vi = others.find((x) => x !== ui);
       const u = mul(b[ui], Math.sign(dot(b[ui], wantU)) || 1);
