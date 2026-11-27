@@ -1306,6 +1306,28 @@ const AI_VARIANTS = [
   aiVariant('mask', {}, 'crisp', 0.7), aiVariant('mask', { level: 2 }, 'crisp', 0.7), aiVariant('mask', {}, 'smooth'),
   aiVariant('areas50', {}, 'crisp', 0.7), aiVariant('areas50', { level: 2 }, 'crisp', 0.7), aiVariant('areas104', {}, 'crisp', 0.7), aiVariant('areas104', { level: 2 }, 'crisp', 0.7), aiVariant('areas104', {}, 'smooth'),
 ];
+/**
+ * The versions the compare window opens with: the settings that have looked best, on the models
+ * that suit this scan. The owner asked for these first (2026-11-27); the full standard set and
+ * random mixes come only when asked for. What "best" rests on: his verdicts (fine grid with the
+ * crisp finish; a slightly stricter level; never "whole study" averaging, which blurs the folds)
+ * and the model Auto picks for the scan.
+ */
+function bestVariants(stack) {
+  const out = [], seen = new Set();
+  const add = (v) => { const k = variantKey(v); if (!seen.has(k)) { seen.add(k); out.push(v); } };
+  if (app.gpuOK) {
+    const own = Object.values(OWN), firstAuto = own.findIndex((m) => m.auto), top = autoModel(stack);
+    // the model Auto would use, the other home-trained models that have a job, any installed after them (not judged yet), and the 18-part model
+    const models = [top, ...own.filter((m) => m.auto).map((m) => m.key), ...own.slice(0, Math.max(0, firstAuto)).map((m) => m.key), 'partsBig'].filter((k, i, a) => k !== 'classic' && a.indexOf(k) === i);
+    for (const [i, m] of models.entries()) {
+      add(aiVariant(m, {}, 'crisp', 0.7)); add(aiVariant(m, { level: 2 }, 'crisp', 0.7)); add(aiVariant(m, {}, 'smooth', 0.7));
+      if (i === 0) { add(aiVariant(m, { level: 1 }, 'crisp', 0.7)); add(aiVariant(m, {}, 'clean')); add(aiVariant(m, {}, 'raw', 0.7)); }
+    }
+  }
+  for (const i of [0, 1, 3]) add(MR_VARIANTS[i]); // classic: automatic, the owner's favorite, fine and crisp with the deepest folds
+  return out;
+}
 /** AI versions with mixes not tried on this series yet. */
 function freshAiVariants(stack, count) {
   const tried = stack.triedVariants || (stack.triedVariants = new Set());
@@ -1455,6 +1477,7 @@ function addCompare(variants) {
   let first = null;
   for (const variant of variants) {
     tried.add(variantKey(variant));
+    cmp.keys.add(variantKey(variant));
     const sec = cmp.sec[variant.model ? 'ai' : 'classic'];
     const canvas = h('canvas', {}), status = h('div', { class: 'cmp-status' }, 'Waiting…'), why = variantWhy(variant);
     const tile = { variant, canvas, ctx: canvas.getContext('2d'), status, item: null, result: null };
@@ -1567,7 +1590,8 @@ function openCompare() {
     ai: section('AI models', app.gpuOK ? '' : 'not available here: they need WebGPU (a current Chrome or Edge with a graphics card)'),
     classic: section('Classic method (outline and folds)', ''),
   };
-  addCompare(app.gpuOK ? [...AI_VARIANTS, ...MR_VARIANTS] : MR_VARIANTS);
+  cmp.keys = new Set();
+  addCompare(bestVariants(vol.stack));
 }
 function initCompare() {
   $('#btn-compare').onclick = openCompare;
@@ -1577,6 +1601,13 @@ function initCompare() {
     for (const s of Object.values(cmp.sec)) s.grid.parentElement.open = true;
     if (!more.length) return toast('Every combination has been tried on this series.');
     const first = addCompare(more);
+    if (first) first.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  $('#cmp-all').onclick = () => {
+    const rest = (app.gpuOK ? [...AI_VARIANTS, ...MR_VARIANTS] : MR_VARIANTS).filter((v) => !cmp.keys.has(variantKey(v)));
+    if (!rest.length) return toast('All the standard versions are shown already.');
+    for (const s of Object.values(cmp.sec)) s.grid.parentElement.open = true;
+    const first = addCompare(rest);
     if (first) first.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   for (const b of document.querySelectorAll('#cmp-look button')) b.onclick = () => cmpLook(b.dataset.v);
