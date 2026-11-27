@@ -133,12 +133,15 @@ export class Volume {
         out.set(data.subarray(base, base + shift), base + block - shift);
       }
       // The scanner blanks a plane or two at each edge of its box, which would leave a thin empty
-      // slit where the piece rejoins. Those planes are filled in from their two neighbors.
+      // slit where the piece rejoins. The piece is moved up against the head across those planes
+      // (the owner asked for that, not for the slit to be filled in with made-up values).
       const pa = ((last - k) % n + n) % n, pb = ((first - k) % n + n) % n, blank = pb - pa - 1;
       if (blank > 0 && blank <= 2 * edge) {
-        for (let base = 0; base < out.length; base += block) for (let o = 0; o < stride; o++) {
-          const va = out[base + o + pa * stride], vb = out[base + o + pb * stride];
-          for (let t = 1; t <= blank; t++) out[base + o + (pa + t) * stride] = va + (vb - va) * t / (blank + 1);
+        const by = blank * stride;
+        for (let base = 0; base < out.length; base += block) {
+          // the piece lies before the blank planes (it came from the high end) or after them
+          if (high < low) out.copyWithin(base + by, base, base + (pa + 1) * stride);
+          else out.copyWithin(base + (pa + 1) * stride, base + pb * stride, base + block);
         }
       }
       data = out;
