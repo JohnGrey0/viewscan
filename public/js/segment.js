@@ -48,9 +48,22 @@ export function threadCount() { return helperCount() + 1; }
  * The answer is kept with the volume, so trying other settings does not run it again.
  * @returns {Promise<{labels:Uint8Array, prob:Uint8Array, c0:number[], axes:number[][], classes:number, ms:number}>}
  */
+// Models trained at home (viewscan-train): key -> description, from models/own/index.json.
+// The folder is not part of the app's code; without it there are simply none.
+export const OWN = {};
+export async function ownModels() {
+  try {
+    const r = await fetch(new URL('../models/own/index.json', import.meta.url), { cache: 'no-cache' });
+    const list = r.ok ? await r.json() : [];
+    for (const m of Array.isArray(list) ? list : []) if (m && m.key && m.dir) OWN[m.key] = m;
+  } catch { /* none */ }
+  return Object.values(OWN);
+}
 let aiLine = Promise.resolve(); // one network at a time: they share one graphics card
-export function brainModel(vol, key, onProgress = () => {}) {
-  const kept = vol.ai || (vol.ai = new Map());
+export function brainModel(vol, key, onProgress = () => {}, others = []) {
+  const kept = vol.ai || (vol.ai = new Map()), model = key;
+  const plain = (v) => ({ nx: v.nx, ny: v.ny, nz: v.nz, data: v.data, origin: v.origin, dx: v.dx, dy: v.dy, dz: v.dz });
+  if (others.length) key = model + '+study'; // a study model with the other series: kept apart from its answer for this series alone
   if (!kept.has(key)) {
     const turn = aiLine;
     const job = turn.then(() => new Promise((resolve, reject) => {
@@ -59,10 +72,10 @@ export function brainModel(vol, key, onProgress = () => {}) {
         const m = ev.data;
         if (m.type === 'progress') return job.report && job.report(m.p, m.text);
         w.terminate();
-        if (m.type === 'done') resolve({ ...m.result, key }); else reject(new Error(m.error));
+        if (m.type === 'done') resolve({ ...m.result, key: model, cereb: OWN[model] ? OWN[model].cerebellum : m.result.classes === 18 ? [5, 6] : null }); else reject(new Error(m.error));
       };
       w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'The brain model stopped unexpectedly')); };
-      w.postMessage({ model: key, vol: { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz } });
+      w.postMessage({ model, def: OWN[model], vol: plain(vol), others: others.map(plain) });
     }));
     aiLine = job.catch(() => {});
     job.catch(() => kept.delete(key)); // a failed run may be tried again
@@ -72,6 +85,42 @@ export function brainModel(vol, key, onProgress = () => {}) {
   job.report = onProgress;
   return job;
 }
+/**
+ * The model's answer for a scan, sharpened with its answers for the other series of
+ * the same study (see mergeAnswers in brainnet.js). `others` are the other series'
+ * volumes; with none this is just brainModel(). Kept per scan and model.
+ */
+export function brainAnswer(vol, key, onProgress = () => {}, others = []) {
+  if (!others.length) return brainModel(vol, key, onProgress);
+  if (OWN[key] && OWN[key].inputs > 1) return brainModel(vol, key, onProgress, others); // a study model takes the series in itself
+  const kept = vol.aiStudy || (vol.aiStudy = new Map());
+  if (!kept.has(key)) {
+    const n = others.length + 1, geo = (v) => ({ nx: v.nx, ny: v.ny, nz: v.nz, origin: v.origin, dx: v.dx, dy: v.dy, dz: v.dz });
+    const job = (async () => {
+      const base = await brainModel(vol, key, (p, text) => job.report && job.report(p / n, text));
+      const got = [];
+      for (const [i, o] of others.entries()) {
+        try { const a = await brainModel(o, key, (p, text) => job.report && job.report((i + 1 + p) / n, `Series ${i + 2} of ${n} of this study: ${text}`)); got.push({ prob: a.prob, c0: a.c0, geo: geo(o) }); }
+        catch { /* a series the model cannot read is left out */ }
+      }
+      if (!got.length) return base;
+      job.report && job.report(0.99, 'Putting the answers for all series together…');
+      const merged = await new Promise((resolve, reject) => {
+        const w = new Worker(new URL('./aiworker.js', import.meta.url), { type: 'module' });
+        w.onmessage = (ev) => { w.terminate(); if (ev.data.type === 'done') resolve(ev.data.result); else reject(new Error(ev.data.error)); };
+        w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'Merging stopped unexpectedly')); };
+        w.postMessage({ merge: { base: { prob: base.prob, c0: base.c0, geo: geo(vol) }, others: got } });
+      });
+      return { ...base, prob: merged.prob, study: { used: merged.used + 1, of: n } };
+    })();
+    job.catch(() => kept.delete(key));
+    kept.set(key, job);
+  }
+  const job = kept.get(key);
+  job.report = onProgress;
+  return job;
+}
+
 /** True once a graphics device good enough for the brain models has actually been opened. */
 let gpuProbe = null;
 export function gpuReady() {
@@ -96,7 +145,8 @@ export function gpuReady() {
  * @param {{targets:string[], alone?:boolean, helpers?:number, voxel:number, boneHU:number, modality:'CT'|'MR', finish:object, solid:object, mr?:object}} opts  mr = MRI fine-tuning, see segmentMR
  * @param {(fraction:number, text:string)=>void} onProgress
  */
-export function buildModels(vol, opts, onProgress) {
+export function buildModels(vol, optsIn, onProgress) {
+  const { others, fix, ...opts } = optsIn; // other series of the study (volumes) and marks made by hand: used here, not sent to every worker
   const t0 = performance.now();
   const workers = [];
   const stop = () => { for (const w of workers) w.terminate(); };
@@ -125,14 +175,14 @@ export function buildModels(vol, opts, onProgress) {
     let ai = null, aiNote = '';
     const wantModel = opts.modality === 'MR' && opts.targets.includes('brain') && opts.mr && opts.mr.model && opts.mr.model !== 'classic';
     if (wantModel) {
-      try { ai = await brainModel(vol, opts.mr.model, (p, text) => onProgress(p * 0.3, text)); }
+      try { ai = await brainAnswer(vol, opts.mr.model, (p, text) => onProgress(p * 0.3, text), opts.mr.study ? others || [] : []); }
       catch (err) { aiNote = `The AI brain model could not run (${err.message}); the classic method was used instead.`; }
     }
-    const segOpts = ai ? { ...opts, ai: { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key } } : opts;
+    const segOpts = ai ? { ...opts, ai: { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key, cereb: ai.cereb } } : opts;
     const seg = await run({
       type: 'segment',
       vol: { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz, basis: vol.basis },
-      opts: segOpts, ports: segPorts,
+      opts: fix ? { ...segOpts, fix } : segOpts, ports: segPorts,
     }, segPorts, (m) => onProgress(ai ? 0.3 + m.p * 0.4 : m.p * 0.75, m.text));
     if (aiNote) for (const pt of seg.parts) if (pt.key === 'brain') pt.note = pt.note ? aiNote + ' ' + pt.note : aiNote;
 
@@ -169,7 +219,8 @@ export function buildModels(vol, opts, onProgress) {
       labels: labelVolume(labels, seg.dims, seg.grid),
       items: results.map((r) => r.item).sort((a, b) => a.bit - b.bit),
       notes: seg.notes,
-      used: seg.used,
+      fixed: seg.fixed || 0, // working-grid voxels set by marks made by hand
+      used: seg.used && { ...seg.used, series: ai && ai.study ? ai.study.used : 1 },
       seconds: (performance.now() - t0) / 1000,
       timing: { findParts: (tSeg - t0) / 1000, buildParts: (performance.now() - tSeg) / 1000, threads: pool.length + 1 },
     };

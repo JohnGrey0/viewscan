@@ -1,7 +1,7 @@
 // views.js — the interactive panels: StackView (original 2-D images),
 // SliceView (a reformatted plane through a volume) and View3D.
 
-import { vec, orientLetters } from './volume.js';
+import { vec, orientLetters, display } from './volume.js';
 
 const { add, sub, mul, dot, cross, norm } = vec;
 export const PLANE_COLOR = { AX: '#ff6b6b', COR: '#4ade80', SAG: '#fbbf24' };
@@ -33,7 +33,7 @@ export class ViewBase {
     c.addEventListener('pointermove', (e) => this.onMove(e));
     c.addEventListener('pointerup', (e) => this.onUp(e));
     c.addEventListener('pointercancel', (e) => this.onUp(e));
-    c.addEventListener('pointerleave', () => { this.probe = ''; this.updateProbe(); });
+    c.addEventListener('pointerleave', () => { this.probe = ''; this.updateProbe(); if (this.brushAt) { this.brushAt = null; this.invalidate(); } });
     c.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     c.addEventListener('contextmenu', (e) => e.preventDefault());
     c.addEventListener('dblclick', () => app.toggleMax(this));
@@ -79,6 +79,7 @@ export class ViewBase {
     this.drag = { action, x, y, x0: x, y0: y, moved: 0 };
     if (MEASURE_TOOLS.has(action) && this.canMeasure()) this.annotDown(action, x, y);
     else if (action === 'cross') this.setCross(x, y);
+    else if (action === 'fix') this.fixStroke?.(x, y, true);
     e.preventDefault();
   }
   onMove(e) {
@@ -93,6 +94,7 @@ export class ViewBase {
       case 'wl': this.windowDrag(dx / this.dpr, dy / this.dpr); break;
       case 'scroll': d.acc = (d.acc || 0) + dy / this.dpr; { const n = Math.trunc(d.acc / 6); if (n) { d.acc -= n * 6; this.scroll(n); } } break;
       case 'cross': this.setCross(x, y); break;
+      case 'fix': this.fixStroke?.(x, y, false); break;
       case 'rotate': this.rotate(dx / this.dpr, dy / this.dpr); break;
       default: if (d.annot) this.annotMove(x, y);
     }
@@ -104,6 +106,7 @@ export class ViewBase {
     this.drag = null;
     try { this.el.releasePointerCapture(e.pointerId); } catch { /* already released */ }
     if (d.annot) this.annotUp(d);
+    if (d.action === 'fix') this.fixDone?.();
     this.dragEnd?.(d);
   }
   onWheel(e) {
@@ -305,11 +308,17 @@ export class StackView extends ViewBase {
     else { const k = Math.min(this.w / old[0], this.h / old[1]); this.zoom *= k; this.panX *= k; this.panY *= k; this.fitZoom = null; }
   }
   reset() { this.rot = 0; this.flip = false; this.fit(); this.invalidate(); }
+  /** Mirrored? The Flip button, or "left on left" for a picture whose columns run toward the patient's left. */
+  flipped() {
+    const f = this.stack && this.stack.frames[this.index], iop = (f && f.iop) || (this.stack && this.stack.desc.iop);
+    const auto = !!(display.leftOnLeft && iop && iop[0] > 0.7);
+    return this.flip !== auto;
+  }
   matrix() {
     const s = this.stack, ps = this.spacing() || [1, 1];
     return new DOMMatrix()
       .translate(this.w / 2 + this.panX, this.h / 2 + this.panY)
-      .scale(this.zoom).rotate(this.rot * 90).scale(this.flip ? -1 : 1, 1)
+      .scale(this.zoom).rotate(this.rot * 90).scale(this.flipped() ? -1 : 1, 1)
       .scale(ps[1], ps[0]).translate(-s.cols / 2, -s.rows / 2);
   }
   screenToPlane(x, y) { const p = this.matrix().inverse().transformPoint({ x, y }); return [p.x, p.y]; }
@@ -420,7 +429,7 @@ export class StackView extends ViewBase {
     const iop = (fr && fr.iop) || s.desc.iop;
     if (iop) {
       const ex = iop.slice(0, 3), ey = iop.slice(3, 6);
-      const inv = new DOMMatrix().rotate(this.rot * 90).scale(this.flip ? -1 : 1, 1).inverse();
+      const inv = new DOMMatrix().rotate(this.rot * 90).scale(this.flipped() ? -1 : 1, 1).inverse();
       const r = inv.transformPoint({ x: 1, y: 0 }), dn = inv.transformPoint({ x: 0, y: 1 });
       this.setOrient(add(mul(ex, r.x), mul(ey, r.y)), add(mul(ex, dn.x), mul(ey, dn.y)));
     } else this.setOrient(null, null);
@@ -478,6 +487,31 @@ export class SliceView extends ViewBase {
     const v = this.valueAt(a, b);
     this.probe = Number.isFinite(v) ? `${fmt(v, 0)} ${this.unit()}` : '';
     this.updateProbe();
+    if (this.app.tool === 'fix') { this.brushAt = [x, y]; this.invalidate(); } else this.brushAt = null;
+  }
+  // ---- marks made by hand (the "Fix brain" tool; see fixes.js) ----
+  fixStroke(x, y, first) {
+    if (!this.vol) return;
+    const [a, b] = this.screenToPlane(x, y), w = this.planeToWorld(a, b);
+    this.app.fixPaint(this, first ? null : this.fixLast, w, first);
+    this.fixLast = w;
+  }
+  fixDone() { this.fixLast = null; this.app.fixEnd(this); }
+  drawFixTool() {
+    const st = this.app.fixState, ctx = this.ctx;
+    if (this.app.tool !== 'fix' || !st) return;
+    const color = st.mode === 1 ? '#4ade80' : st.mode === 2 ? '#fb923c' : '#e5e7eb';
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5 * this.dpr;
+    if (st.path && st.view === this) {
+      const { u, v } = this.g;
+      ctx.beginPath();
+      st.path.forEach((w, i) => { const q = sub(w, this.vol.center), [x, y] = this.planeToScreen(dot(q, u), dot(q, v)); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+      ctx.closePath(); ctx.globalAlpha = 0.2; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1; ctx.stroke();
+    } else if (this.brushAt && st.shape === 'brush') {
+      ctx.beginPath(); ctx.arc(this.brushAt[0], this.brushAt[1], Math.max(2 * this.dpr, st.size / 2 / this.zoom), 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
   }
   pan(dx, dy) { this.panA -= dx * this.zoom; this.panB -= dy * this.zoom; this.invalidate(); }
   zoomAt(f, x, y) {
@@ -491,6 +525,7 @@ export class SliceView extends ViewBase {
     const N = this.count();
     const idx = Math.max(0, Math.min(N - 1, this.sliceIndex() + k));
     const target = (idx - (N - 1) / 2) * this.g.step;
+    this.app.cut.plane = this.plane; // "cut away follows the slice" cuts along the plane scrolled last
     this.app.setFocus(add(this.app.mpr.focus, mul(this.g.n, target - this.dn())));
   }
   setCross(x, y) {
@@ -506,6 +541,7 @@ export class SliceView extends ViewBase {
     const center = this.planeToWorld(this.panA, this.panB);
     this.app.gl.setVolume(vol);
     this.app.gl.setLabels(this.app.labels());
+    this.app.gl.setFix(this.app.fixShown());
     this.app.gl.drawSlice(ctx, this.w, this.h, {
       center, u: mul(u, this.zoom), v: mul(v, this.zoom), n,
       wc: d.wc, ww: d.ww, invert: d.invert, slab: m.slab, slabMode: m.slabMode, labelColors: this.app.labelColors(),
@@ -523,6 +559,7 @@ export class SliceView extends ViewBase {
       ctx.globalAlpha = 1;
     }
     this.drawAnnots();
+    this.drawFixTool();
     this.drawScaleBar(1 / this.zoom);
     this.setOrient(u, v);
     const N = this.count();

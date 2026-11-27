@@ -207,13 +207,68 @@ For MRI, **Brain finder** (above "Detail") chooses how the brain is found:
   what **Auto** uses), Tissue GWM, Brain mask, Aparc+Aseg 50 and 104.
   They were trained on T1-weighted scans; Auto uses the classic method for T2 and
   proton-density scans, and anywhere WebGPU is missing.
+- **Your own models**: models trained on this computer with the separate
+  `viewscan-train` project appear in their own group at the top of the list. They
+  learn from sharp public brains made rough on purpose (6 mm slices, other kinds
+  of contrast), so they hold up better on an ordinary hospital study, and they
+  tell the two halves, the cerebellum, the brain stem and the fluid in the folds
+  apart. They live in `public/models/own/`, which is not part of the repository.
 - **Classic**: the outline-and-folds method described below. Works on any scan.
+
+With a model of your own, **Use every series of this study** (off at the start)
+runs the model on each series of the study and averages the answers. The overall
+shape gets steadier; folds get softer, because the head moves a little between
+series.
+
+A **study model** (also trained with `viewscan-train`) goes further: it looks at up to
+three series of the study at once, one for each direction the slices can be stacked in.
+Viewscan picks them, lines them up with the scan in view (heads move a degree or two
+between series) and gives them to the model together. It takes about four times as long as
+one series, and the folds come out clearly better on 6 mm studies.
 
 Each has its own fine-tune panel, and the settings of one are not used by the
 other. With a panel open, the slices are tinted with what was found. The mesh
 follows the network's answer closely: in `test/ai.py` 99.7% of the mesh points lie
 on the surface the network found. A network takes about 3 to 8 seconds on a
 recent graphics card, once per series; other settings then reuse its answer.
+
+## Wrapped-around parts
+
+On some MRI scans (often a quick overview scan) a part that stuck out of the measured box,
+such as the tip of the nose, is drawn on the opposite side, floating behind the head. In
+"3D & models" Viewscan moves it back where it belongs and says so under **Put wrapped-around
+parts back in place**. Untick that if a scan looks wrong with it. The "2D images" always show
+the scan as it was made.
+
+## Left and right on the pictures
+
+Hospitals draw top-down and front pictures as if facing the patient, so the patient's left
+is on the right of the screen (the L and R letters at the edges say which side is which).
+**Left on left** in the toolbar mirrors those pictures, so left is on the left.
+
+## Cut the model open while scrolling
+
+Under the list of 3D models, tick **Cut the model open at the slice I scroll to**. The 3D
+model is then cut at the slice you are looking at: scroll through the top-down, front or
+side pictures and the cut moves along with you. Untick it to scroll without cutting.
+
+## Fix the brain by hand
+
+When a brain model has a filled-in fold, a bit of skull or membrane stuck to it, or a piece
+missing, you can correct it yourself. In "3D & models", click **Fix brain** (or press F) and
+paint on any of the three slice pictures:
+
+- **This is brain** (green) where brain is missing, **Not brain** (orange) where something
+  else was colored in, **Rub out** to take your own marks away.
+- **Brush** paints with a round brush (keys [ and ] change its size); **Draw around** marks
+  everything inside a line you draw.
+- The mouse wheel moves through the slices, **T** turns the colors off and on so you can see
+  the scan underneath, Ctrl+Z takes back the last stroke.
+- **Update the 3D model** builds the models again with your marks, whichever brain finder
+  is chosen.
+
+Marks are saved on this computer next to the app's index (never in the scan folder) and
+come back when you open the series again.
 
 ## Tests
 

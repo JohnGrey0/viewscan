@@ -27,6 +27,7 @@ const CACHE_DIR = process.env.CACHE_DIR || path.join(ROOT, '.cache');
 const SCANS_DIR = path.resolve(process.env.SCANS_DIR || ROOT);
 const BASIC_AUTH = process.env.BASIC_AUTH || '';
 const CACHE_FILE = path.join(CACHE_DIR, 'index.json');
+const FIX_DIR = path.join(CACHE_DIR, 'fixes'); // marks made by hand on the slices ("Fix brain"): one file per series, never in a scan folder
 const PORT = Number(process.env.PORT || 8127);
 const HOST = process.env.HOST || '127.0.0.1';
 const CACHE_VERSION = 5;
@@ -166,7 +167,8 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
-    if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
+    const savingFix = req.method === 'PUT' && p.startsWith('/api/fix/'); // the only thing the page may write
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !savingFix) return send(res, 405, 'Method not allowed');
     if (p === '/healthz') return send(res, 200, state.status === 'error' ? 'error' : 'ok', { 'Content-Type': 'text/plain' });
     if (BASIC_AUTH) {
       const given = Buffer.from((req.headers.authorization || '').replace(/^Basic /i, ''), 'base64');
@@ -182,6 +184,28 @@ const server = http.createServer(async (req, res) => {
         ? { status: 'ready', studies: state.studies, roots: state.roots.map((r) => path.basename(r)) }
         : { status: state.status, scanned: state.scanned, total: state.total, error: state.error };
       return send(res, 200, JSON.stringify(body), { 'Content-Type': 'application/json' });
+    }
+
+    if (p.startsWith('/api/fix/')) {
+      const id = p.slice(9);
+      if (!/^[\w.-]{1,150}$/.test(id) || id.includes('..')) return send(res, 400, 'Bad name');
+      const file = path.join(FIX_DIR, id + '.json');
+      if (!savingFix) {
+        const body = await fsp.readFile(file).catch(() => null);
+        return send(res, 200, body || 'null', { 'Content-Type': 'application/json' }); // null: no marks saved for this series
+      }
+      // only this page may save: a request from another site carries that site's Origin
+      const from = req.headers.origin;
+      if (from && new URL(from).host !== req.headers.host) return send(res, 403, 'Forbidden');
+      const chunks = []; let size = 0;
+      for await (const c of req) { size += c.length; if (size > 64e6) return send(res, 413, 'Too large'); chunks.push(c); }
+      const body = Buffer.concat(chunks);
+      const marks = JSON.parse(body.toString('utf8'));
+      if (!marks || !Array.isArray(marks.dims) || typeof marks.gz !== 'string') return send(res, 400, 'Not a set of marks');
+      await fsp.mkdir(FIX_DIR, { recursive: true });
+      await fsp.writeFile(file + '.tmp', body);
+      await fsp.rename(file + '.tmp', file);
+      return send(res, 200, 'saved', { 'Content-Type': 'text/plain' });
     }
 
     if (p.startsWith('/api/file/')) {

@@ -2,11 +2,12 @@
 
 import { Stack, pool, srcFor } from './loader.js';
 import { organize, PLANE_LABEL } from './series.js';
-import { Volume, vec } from './volume.js';
+import { Volume, vec, display } from './volume.js';
 import { GLRenderer } from './glrender.js';
 import { StackView, SliceView, View3D, fmtDate } from './views.js';
-import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainModel } from './segment.js';
+import { TARGETS, buildModels, exportSTL, exportOBJ, newSegWorker, labelVolume, gpuReady, brainAnswer, ownModels, OWN } from './segment.js';
 import { saveFolder, removeFolder, loadFolders, updateSummaries, SUMMARY_FORMAT } from './localstore.js';
+import { newFix, beginStroke, endStroke, brush, lasso, undo as undoFix, clearAll as clearFix, slicesMarked, saveFix, loadFix, fixStore } from './fixes.js';
 
 const $ = (s) => document.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -36,6 +37,7 @@ const ICONS = {
   pause: icon('<path d="M8 5v14M16 5v14"/>'),
   shot: icon('<rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8.5 7 10 4h4l1.5 3"/>'),
   trash: icon('<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>'),
+  fix: icon('<path d="M4 20l1-4.5L16.5 4a2.1 2.1 0 0 1 3 3L8 18.5z"/><path d="M14.5 6l3 3"/>'),
   eye: icon('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/>'),
 };
 
@@ -51,6 +53,28 @@ const app = {
   r3d: { show: 'volume', mode: 'surface', iso: 300, color: [0.93, 0.89, 0.8] },
   cut: { axis: '', pos: 0.5 }, showOverlay: true,
   gl: null, volume: null, cine: 0, fps: 12,
+  // the "Fix brain" tool: mode 1 = brain, 2 = not brain, 0 = rub out; size is the brush's width in mm
+  fixState: { mode: 1, shape: 'brush', size: 8, path: null, view: null },
+  /** The hand-made marks to draw on the slices; the T key hides them together with the model colors. */
+  fixShown() { const f = this.volume && this.volume.stack.fix; return f && this.showOverlay ? f : null; },
+  fixPaint(view, w0, w1, first) {
+    const vol = this.volume, st = this.fixState;
+    if (!vol) return;
+    const fix = vol.stack.fix || (vol.stack.fix = newFix(vol));
+    if (first && !this.showOverlay) toggleOverlay(); // painting with the colors off would be painting blind
+    if (first) { beginStroke(fix); st.view = view; st.path = st.shape === 'lasso' ? [w1] : null; }
+    if (!fix.stroke) return;
+    if (st.path) { if (!first) st.path.push(w1); }
+    else { brush(vol, fix, view.g, w0 || w1, w1, st.size / 2, st.mode); fix.version++; }
+    this.redrawAll();
+  },
+  fixEnd(view) {
+    const vol = this.volume, st = this.fixState, fix = vol && vol.stack.fix;
+    if (!fix) return;
+    if (st.path) { if (st.path.length > 2) lasso(vol, fix, view.g, st.path, st.mode); st.path = null; }
+    endStroke(fix);
+    fixChanged();
+  },
 
   activate(v) {
     if (this.active === v) return;
@@ -100,6 +124,14 @@ const app = {
   },
   clipPlane() {
     const vol = this.volume;
+    if (this.cut.follow && vol) {
+      // The cut follows the slice last scrolled through; what is above (in front of, left of) it is cut away.
+      // The side is fixed: flipping it to face the viewer was tried, and the owner found the model
+      // jumping or vanishing while he turned it.
+      const plane = this.cut.plane || 'AX', g = vol.views[plane], want = { AX: [0, 0, 1], COR: [0, -1, 0], SAG: [1, 0, 0] }[plane];
+      const n = vec.mul(g.n, Math.sign(vec.dot(g.n, want)) || 1);
+      return [...n, vec.dot(this.mpr.focus, n)];
+    }
     if (!this.cut.axis || !vol) return null;
     const n = { S: [0, 0, 1], A: [0, -1, 0], L: [1, 0, 0] }[this.cut.axis];
     const half = vol.extentAlong(n) / 2;
@@ -109,6 +141,22 @@ const app = {
 window.viewscan = app;
 // can this computer run the AI brain models? (asked once; the panel is refreshed when the answer is in)
 gpuReady().then((ok) => { app.gpuOK = ok; showMethod(); });
+// models trained at home get their own group at the top of the list, and versions in the compare grid
+ownModels().then((list) => {
+  if (!list.length) return;
+  const group = h('optgroup', { label: 'Your own models (trained on this computer)' });
+  for (const m of list) {
+    group.append(h('option', { value: m.key }, m.name));
+    MODEL_SHORT[m.key] = m.name;
+    MODEL_WHY[m.key] = m.why || 'Trained at home with viewscan-train.';
+    if (m.inputs > 1) AI_VARIANTS.unshift(aiVariant(m.key, {}, 'crisp', 0.7), aiVariant(m.key, {}, 'clean'), aiVariant(m.key, { level: 2 }, 'crisp', 0.7), aiVariant(m.key, {}, 'smooth', 0.7));
+    else AI_VARIANTS.unshift(aiVariant(m.key, { study: 1 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'clean'), aiVariant(m.key, { study: 1, level: 2 }, 'crisp', 0.7), aiVariant(m.key, { study: 1 }, 'smooth', 0.7), aiVariant(m.key, {}, 'crisp', 0.7), aiVariant(m.key, {}, 'clean'), aiVariant(m.key, { level: 2 }, 'crisp', 0.7), aiVariant(m.key, { level: -2 }, 'crisp', 0.7), aiVariant(m.key, {}, 'smooth', 0.7));
+    OWN_KEYS.push(m.key);
+  }
+  $('#m-model').insertBefore(group, $('#m-model').children[1]);
+  const stack = app.volume?.stack;
+  if (stack) loadMethod(stack); else showMethod();
+});
 app.api = { openStack: (...a) => openStack(...a), setMode: (m) => setMode(m) }; // for tests and the console
 
 // ------------------------------------------------------------ library ------
@@ -395,8 +443,8 @@ function setMode(mode) {
 function applyMode() {
   $('#app').className = `mode-${app.mode}`;
   for (const b of document.querySelectorAll('#mode-switch button')) b.classList.toggle('on', b.dataset.mode === app.mode);
-  if (app.mode === '3d' && !['scroll', 'wl', 'pan', 'zoom', 'cross', 'length', 'angle', 'roi'].includes(app.tool)) app.tool = 'cross';
-  if (app.mode !== '3d' && app.tool === 'cross') app.tool = 'scroll';
+  if (app.mode === '3d' && !['scroll', 'wl', 'pan', 'zoom', 'cross', 'length', 'angle', 'roi', 'fix'].includes(app.tool)) app.tool = 'cross';
+  if (app.mode !== '3d' && (app.tool === 'cross' || app.tool === 'fix')) app.tool = 'scroll';
   else if (app.mode === '3d' && app.tool === 'scroll' && !app.toolPicked) app.tool = 'cross';
   buildViews(); buildToolbar(); markActiveSeries();
 }
@@ -422,7 +470,18 @@ async function open3D(stack) {
   for (const v of app.views) v.setVolume(vol);
   app.setFocus(vol.center);
   setup3DPanel();
+  const note = $('#unwrap-note'), dirs = vol.unwrapped.map((a) => (Math.abs(vol.basis[a][0]) > 0.7 ? 'side to side' : Math.abs(vol.basis[a][1]) > 0.7 ? 'front to back' : 'top to bottom'));
+  note.hidden = !dirs.length;
+  note.textContent = dirs.length ? `This scan had a part wrapped around (${dirs.join(' and ')}); it was moved back.` : '';
+  $('#unwrap-row').style.display = stack.unit === 'HU' ? 'none' : '';
   markActiveSeries(); updateToolbar(); syncPreset();
+  // marks made by hand on an earlier visit come back with the series
+  if (!stack.fix && !stack.fixAsked) {
+    stack.fixAsked = true;
+    fixStore.server = app.sources.has('server');
+    loadFix(stack, vol).then((fix) => { if (fix && !stack.fix) { stack.fix = fix; if (app.volume === vol) { showFix(); app.redrawAll(); } } }).catch(() => {});
+  }
+  showFix();
 }
 
 // ------------------------------------------------------------- toolbar -----
@@ -461,6 +520,9 @@ function buildToolbar() {
     bar.append(act('rotate', 'Rotate', 'Rotate a quarter turn', () => withStackView((v) => { v.rot = (v.rot + 1) % 4; v.fit(); v.invalidate(); })),
       act('flip', 'Flip', 'Mirror left ↔ right', () => withStackView((v) => { v.flip = !v.flip; v.invalidate(); })));
   }
+  const lol = act('flip', 'Left on left', 'Hospitals draw top-down and front pictures as if facing the patient, so the patient’s left is on the right of the screen (see the L and R letters). Switch this on to mirror them, so left is on the left.', () => setLeftOnLeft(!display.leftOnLeft));
+  lol.id = 'btn-lol';
+  bar.append(lol);
   bar.append(act('reset', 'Reset', 'Back to the starting view (R)', resetView), sep());
   const playBtn = act('play', 'Play', 'Play through the slices like a film (Space)', toggleCine);
   playBtn.id = 'btn-play';
@@ -481,12 +543,25 @@ function buildToolbar() {
     const tint = act('tint', 'Colors', 'Show or hide the colors on the slices (the pink brain and the other models), to see the scan itself (T)', toggleOverlay);
     tint.id = 'btn-tint';
     bar.append(sep(), tint);
+    bar.append(tool('fix', 'Fix brain', 'Paint on the slices where the brain is colored in wrongly, then update the 3D model', 'F'));
   }
   bar.append(sep(), act('shot', 'Save picture', 'Save the selected panel as a PNG image', screenshot));
   updateToolbar();
   syncPreset();
 }
-function setTool(id) { app.tool = id; app.toolPicked = true; updateToolbar(); }
+/** "Left on left": mirror the top-down and front pictures (hospitals show the patient's left on the right). */
+function setLeftOnLeft(on) {
+  if (display.leftOnLeft === on) return;
+  display.leftOnLeft = on;
+  store.set('leftonleft', on ? '1' : '');
+  for (const s of app.stacks.values()) {
+    if (s.volume) s.volume.views = s.volume.assignViews();
+    for (const a of s.annots) if (a.space === 'AX' || a.space === 'COR') for (const p of a.pts) p[0] = -p[0]; // measurements stay on their spot
+  }
+  if (app.volume) { const focus = [...app.mpr.focus]; for (const v of app.views) if (v.kind === 'slice') v.setVolume(app.volume); app.setFocus(focus); }
+  updateToolbar(); app.redrawAll();
+}
+function setTool(id) { app.tool = id; app.toolPicked = true; updateToolbar(); app.redrawAll(); }
 function toggleOverlay() {
   app.showOverlay = !app.showOverlay;
   store.set('overlay', app.showOverlay ? '1' : '');
@@ -495,12 +570,59 @@ function toggleOverlay() {
   app.redrawAll();
 }
 function updateToolbar() {
+  $('#btn-lol')?.classList.toggle('toggled', display.leftOnLeft);
+  const fixing = app.mode === '3d' && app.tool === 'fix';
+  $('#fix-panel').hidden = !fixing;
+  $('#app').classList.toggle('tool-fix', fixing);
+  if (fixing) showFix();
   const tint = $('#btn-tint');
   if (tint) { tint.classList.toggle('toggled', app.showOverlay); tint.querySelector('span').textContent = app.showOverlay ? 'Colors on' : 'Colors off'; }
   for (const b of document.querySelectorAll('#toolbar [data-tool]')) b.classList.toggle('on', b.dataset.tool === app.tool);
   const play = $('#btn-play');
   if (play) { play.innerHTML = `${app.cine ? ICONS.pause : ICONS.play}<span>${app.cine ? 'Pause' : 'Play'}</span>`; play.classList.toggle('toggled', !!app.cine); }
 }
+// ---- marks made by hand ("Fix brain"; fixes.js) ----
+let fixSaveTimer = 0;
+function showFix() {
+  const st = app.fixState, stack = app.volume?.stack, fix = stack?.fix;
+  for (const b of document.querySelectorAll('#fix-mode button')) b.classList.toggle('on', Number(b.dataset.v) === st.mode);
+  for (const b of document.querySelectorAll('#fix-shape button')) b.classList.toggle('on', b.dataset.v === st.shape);
+  $('#fix-size').value = st.size; $('#fix-size-out').textContent = `${st.size} mm`;
+  $('#fix-size-row').style.display = st.shape === 'brush' ? '' : 'none';
+  $('#fix-undo').disabled = !(fix && fix.undo.length);
+  $('#fix-clear').disabled = !(fix && fix.count);
+  const box = $('#fix-status');
+  const n = fix && fix.count ? slicesMarked(fix) : 0;
+  const todo = !!fix && fix.version !== fix.built && (fix.count > 0 || fix.built > 0) && !!stack.models;
+  box.classList.toggle('todo', todo);
+  box.textContent = !fix || (!fix.count && !fix.undo.length) ? 'No marks on this series yet.'
+    : `${n ? `Marks on ${n} slice${n === 1 ? '' : 's'}` : 'No marks left'}${fix.saved ? ` · saved ${fix.where === 'browser' ? 'in this browser' : 'on this computer'}` : ''}.`
+      + (todo ? ' The 3D model does not have your latest marks yet.' : stack.models && fix.built === fix.version && n ? ' They are in the 3D model.' : '');
+}
+function fixChanged() {
+  const vol = app.volume;
+  if (!vol) return;
+  const stack = vol.stack, fix = stack.fix;
+  showFix(); app.redrawAll();
+  clearTimeout(fixSaveTimer);
+  fixStore.server = app.sources.has('server');
+  if (fix && !fix.saved) fixSaveTimer = setTimeout(() => {
+    saveFix(stack, vol, fix).then((where) => { fix.where = where; if (app.volume === vol) showFix(); })
+      .catch((err) => { if (app.volume === vol) $('#fix-status').textContent = 'Your marks could not be saved: ' + err.message; });
+  }, 900);
+}
+function initFix() {
+  const st = app.fixState;
+  for (const b of document.querySelectorAll('#fix-mode button')) b.onclick = () => { st.mode = Number(b.dataset.v); showFix(); app.redrawAll(); };
+  for (const b of document.querySelectorAll('#fix-shape button')) b.onclick = () => { st.shape = b.dataset.v; showFix(); app.redrawAll(); };
+  $('#fix-size').oninput = (e) => { st.size = Number(e.target.value); showFix(); app.redrawAll(); };
+  $('#fix-undo').onclick = fixUndo;
+  $('#fix-clear').onclick = () => { const fix = app.volume?.stack.fix; if (fix && fix.count) { clearFix(fix); fixChanged(); } };
+  $('#fix-build').onclick = () => build();
+}
+function fixUndo() { const fix = app.volume?.stack.fix; if (fix && undoFix(fix)) fixChanged(); }
+function fixSize(by) { const st = app.fixState; st.size = Math.max(1, Math.min(40, st.size + by)); showFix(); app.redrawAll(); }
+
 function currentStack() { return app.mode === '3d' ? app.volume?.stack : (app.active?.stack || app.views.find((v) => v.stack)?.stack); }
 function withStackView(fn) { const v = app.active && app.active.kind === 'stack' ? app.active : null; if (v && v.stack) fn(v); }
 
@@ -658,12 +780,22 @@ function renderModels() {
         h('input', { type: 'color', value: hex(it.color), title: 'Color', oninput: (e) => { it.color = unhex(e.target.value); app.redrawAll(); } }),
         it.name),
       h('div', { class: 'stats' }, stats + (it.mesh ? tag : '')),
+      it.how && h('div', { class: 'how ' + it.how.kind, title: it.how.title }, h('b', {}, it.how.kind === 'own' ? 'Home-trained model' : it.how.kind === 'ai' ? 'AI model' : 'Classic method'), it.how.text),
       it.mesh && it.note && h('div', { class: 'note' }, it.note),
       it.mesh && h('div', { class: 'acts' },
         h('input', { type: 'range', min: 5, max: 100, value: Math.round(it.opacity * 100), title: 'See-through', oninput: (e) => { it.opacity = e.target.value / 100; app.redrawAll(); } }),
         h('button', { class: 'btn', title: 'Save as STL (for 3D printing), in millimeters', onclick: () => saveModel(it, 'stl') }, 'STL'),
-        h('button', { class: 'btn', title: 'Save as OBJ', onclick: () => saveModel(it, 'obj') }, 'OBJ'))));
+        h('button', { class: 'btn', title: 'Save as OBJ', onclick: () => saveModel(it, 'obj') }, 'OBJ'),
+        it.key === 'brain' && h('button', { class: 'btn', title: 'Paint on the slices where the brain is colored in wrongly, then update the 3D model', onclick: () => setTool('fix') }, 'Fix by hand'))));
   }
+}
+/** Which brain finder made a brain model: shown under it, so a good result can be traced back. */
+function foundBy(used) {
+  const key = used && used.model;
+  if (!key) return { kind: 'classic', text: 'outline and folds', title: 'The classic method found this brain.' };
+  const name = (MODEL_SHORT[key] || key).replace(/^Home-trained: /, '');
+  const many = used.series > 1 ? ` · ${used.series} series of this study` : '';
+  return { kind: OWN[key] ? 'own' : 'ai', text: name + many, title: MODEL_WHY[key] || '' };
 }
 function saveModel(it, kind) {
   const s = app.volume.stack;
@@ -739,16 +871,61 @@ const MR_INPUTS = ['#m-reach', '#m-stiff', '#m-grow', '#m-bottom', '#m-folds', '
 function autoModel(stack = app.volume?.stack) {
   if (!app.gpuOK) return 'classic';
   const kind = stack && stack.series ? scanKind(stack.series) : null;
-  return kind && /T2|PD/.test(kind.name) ? 'classic' : 'partsBig';
+  if (kind && /T2|PD/.test(kind.name)) return 'classic';
+  // Home-trained models say what they are best at (`auto` in models/own/index.json; the first
+  // of a kind in the list wins): "study" for thick slices when the study has more series,
+  // "scout" for a low-detail overview scan, "single" for either of those when nothing fits better.
+  // A sharp scan (about 1 mm) stays with the 18-part model, which was trained on such scans.
+  const shape = scanShape(stack), own = Object.values(OWN), pick = (use) => own.find((m) => m.auto === use);
+  const m = shape === 'thick' ? (studyPartners(stack).length && pick('study')) || pick('single') : shape === 'scout' ? pick('scout') || pick('single') : null;
+  return m ? m.key : 'partsBig';
 }
+/** 'thick' (slices 3 mm or more apart and much coarser than within a slice), 'scout' (1.2 mm or coarser all round), 'fine', or '' when not known yet. */
+function scanShape(stack) {
+  const v = stack && stack.volume;
+  if (!v) return '';
+  const hi = Math.max(...v.spacing), lo = Math.min(...v.spacing);
+  return hi >= 3 && hi / lo >= 2.5 ? 'thick' : hi >= 1.2 ? 'scout' : 'fine';
+}
+const AUTO_WHY = { thick: 'Picked for this scan because its slices are far apart.', scout: 'Picked for this scan because it is a low-detail overview scan.' };
 /** The brain finder in use: the dropdown's choice, with "Auto" worked out. */
 function chosenModel(stack = app.volume?.stack) { const v = $('#m-model').value; return v === 'auto' ? autoModel(stack) : v; }
-const AI_DEFAULT = { level: 0, grow: 0, stump: 8 };
-const readAiRaw = () => ({ level: Number($('#a-level').value), grow: Number($('#a-grow').value), stump: Number($('#a-stump').value) });
-const aiFromRaw = (model, a) => ({ model, folds: a.level / 5, grow: a.grow, stump: a.stump });
+const AI_DEFAULT = { level: 0, grow: 0, stump: 8, study: 0 };
+const readAiRaw = () => ({ level: Number($('#a-level').value), grow: Number($('#a-grow').value), stump: Number($('#a-stump').value), study: $('#a-study').checked ? 1 : 0 });
+// a study model (one that takes several series in at once) always looks at the other series
+const studyModel = (model) => !!(OWN[model] && OWN[model].inputs > 1);
+const aiFromRaw = (model, a) => ({ model, folds: a.level / 5, grow: a.grow, stump: a.stump, study: a.study || studyModel(model) ? 1 : 0 });
+// The other series of the same study that a brain model can also look at (see brainAnswer):
+// every MRI series that is a proper volume, except maps and overviews that do not show anatomy.
+const STUDY_SKIP = /DIFF|DWI|ADC|TRACE|PERF|LOCAL|MIP|SWI|PHASE/i;
+function studyPartners(stack) {
+  if (!stack || stack.unit === 'HU' || stack.desc.combined) return [];
+  const list = [];
+  for (const se of stack.study.series) {
+    if (se === stack.series || se.modality !== 'MR' || se.combined || STUDY_SKIP.test(se.desc || '')) continue;
+    const st = se.stacks.filter((x) => x.volume && !x.combined && x.n >= 16).sort((a, b) => b.n - a.n)[0];
+    if (st) list.push({ series: se, st });
+  }
+  return list;
+}
+/** Reads those series fully and returns their volumes (kept once read). */
+async function studyVolumes(stack, say = () => {}) {
+  const list = studyPartners(stack), vols = [];
+  for (const [k, { series, st }] of list.entries()) {
+    say(`Reading the other series of this study… ${k + 1} of ${list.length}`);
+    try {
+      const s = getStack(stack.study, series, st);
+      await s.load();
+      if (s.failed || !s.buffer || s.unit === 'HU') continue;
+      vols.push(s.volume || (s.volume = new Volume(s)));
+    } catch { /* a series that cannot be read is left out */ }
+  }
+  return vols;
+}
 function showAi(a) {
   const out = (id, text) => { $(id).parentElement.querySelector('output').textContent = text; };
-  $('#a-level').value = a.level; $('#a-grow').value = a.grow; $('#a-stump').value = a.stump;
+  $('#a-level').value = a.level; $('#a-grow').value = a.grow; $('#a-stump').value = a.stump; $('#a-study').checked = !!a.study;
+  $('#a-study-row').style.display = studyPartners(app.volume?.stack).length && !studyModel($('#m-model').value) ? '' : 'none';
   out('#a-level', a.level === 0 ? 'normal' : a.level > 0 ? `stricter +${a.level}` : `looser ${a.level}`);
   out('#a-grow', a.grow === 0 ? 'none' : `${a.grow > 0 ? '+' : ''}${a.grow} mm`);
   out('#a-stump', a.stump >= 30 ? 'all of it' : `${a.stump} mm`);
@@ -769,9 +946,9 @@ function showMethod() {
   const stack = app.volume?.stack, isMR = !!stack && stack.unit !== 'HU';
   $('#brain-how').style.display = isMR ? '' : 'none';
   const pick = $('#m-model').value, how = chosenModel(stack), ai = how !== 'classic';
-  $('#m-model').options[0].textContent = ai ? 'Auto (AI model)' : 'Auto (classic)';
+  $('#m-model').options[0].textContent = !ai ? 'Auto (classic)' : OWN[how] ? `Auto (${OWN[how].name.replace(/^Home-trained: /, 'home-trained ')})` : 'Auto (AI model)';
   $('#m-model-why').textContent = ai
-    ? `${MODEL_WHY[how] || ''} It runs on this computer’s graphics card; nothing leaves the computer.`
+    ? `${pick === 'auto' && OWN[how] ? (AUTO_WHY[scanShape(stack)] || '') + ' ' : ''}${MODEL_WHY[how] || ''} It runs on this computer’s graphics card; nothing leaves the computer.`
     : pick !== 'auto' ? 'An outline is grown inside the skull and the folds are cut by brightness. Works on any kind of scan.'
       : app.gpuOK ? 'Classic is used for this kind of scan: the AI models were trained on T1-weighted scans. You can still pick one.'
         : 'The AI models need WebGPU (a current Chrome or Edge with a graphics card); the classic method is used here.';
@@ -869,6 +1046,7 @@ function initMr() {
   for (const id of MR_INPUTS) $(id).addEventListener('input', () => keep({ ...readMrRaw(), preset: 'custom' }));
   $('#m-model').addEventListener('change', () => { setMethod($('#m-model').value); requestPreview(); });
   for (const id of ['#a-level', '#a-grow', '#a-stump']) $(id).addEventListener('input', () => { setMethod($('#m-model').value, readAiRaw()); requestPreview(); });
+  $('#a-study').onchange = () => { setMethod($('#m-model').value, readAiRaw()); requestPreview(); };
   $('#a-reset').onclick = () => { setMethod($('#m-model').value, AI_DEFAULT); requestPreview(); };
   $('#a-live').checked = store.get('ailive', '1') === '1';
   $('#a-live').onchange = (e) => { store.set('ailive', e.target.checked ? '1' : ''); requestPreview(); };
@@ -913,7 +1091,7 @@ function pumpPreview() {
         st.preview = { labels: labelVolume(m.labels, m.dims, m.grid) };
         st.mrUsed = m.used || st.mrUsed;
         showMr(readMrRaw());
-        pvStatus(m.used ? `Brain: about ${Math.round(m.ml / 10) * 10} mL${m.note ? '. ' + m.note : ''}` : m.note);
+        pvStatus(m.used ? `Brain: about ${Math.round(m.ml / 10) * 10} mL${m.used.model && preview.series > 1 ? `, from ${preview.series} series of this study` : ''}${m.note ? '. ' + m.note : ''}` : m.note);
         app.previewCount = (app.previewCount || 0) + 1;
         app.redrawAll();
       } else if (m.type === 'error') {
@@ -929,8 +1107,10 @@ function pumpPreview() {
   // an AI model answers first (once per scan; the answer is kept), then its result is laid on the slices
   if (mr.model !== 'classic') {
     pvStatus('Running the brain model on the graphics card…');
-    brainModel(vol, mr.model, (p, text) => { if (app.volume === vol) pvStatus(text); })
-      .then((ai) => { if (app.volume !== vol) { preview.busy = false; return pumpPreview(); } sendPreview(vol, stack, mr, ai); })
+    const say = (text) => { if (app.volume === vol) pvStatus(text); };
+    (mr.study ? studyVolumes(stack, say) : Promise.resolve([]))
+      .then((others) => brainAnswer(vol, mr.model, (p, text) => say(text), others))
+      .then((ai) => { if (app.volume !== vol) { preview.busy = false; return pumpPreview(); } preview.series = ai.study ? ai.study.used : 1; sendPreview(vol, stack, mr, ai); })
       .catch((err) => { preview.busy = false; pvStatus(`The AI model could not run (${err.message}). Pick “Classic” under “Brain finder”.`); });
     return;
   }
@@ -940,13 +1120,14 @@ function sendPreview(vol, stack, mr, ai) {
   const first = preview.volId !== vol.id;
   preview.vol = vol; preview.volId = vol.id;
   if (first) preview.aiKey = '';
-  const sendAi = ai && preview.aiKey !== ai.key;
-  if (sendAi) preview.aiKey = ai.key;
+  const aiId = ai ? ai.key + (ai.study ? '+study' : '') : '';
+  const sendAi = ai && preview.aiKey !== aiId;
+  if (sendAi) preview.aiKey = aiId;
   pvStatus(first ? 'Looking for the brain…' : 'Updating…');
   preview.worker.postMessage({
     type: 'preview', id: ++preview.seq,
     vol: first ? { nx: vol.nx, ny: vol.ny, nz: vol.nz, data: vol.data, origin: vol.origin, dx: vol.dx, dy: vol.dy, dz: vol.dz, basis: vol.basis } : null,
-    ai: sendAi ? { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key } : null,
+    ai: sendAi ? { labels: ai.labels, prob: ai.prob, c0: ai.c0, axes: ai.axes, classes: ai.classes, key: ai.key, cereb: ai.cereb } : null,
     opts: { voxel: 2, modality: 'MR', mr, mrInfo: { tr: stack.series.info.tr, te: stack.series.info.te, ti: stack.series.info.ti } },
   });
 }
@@ -1110,10 +1291,12 @@ const MR_VARIANTS = [
 const cmp = { run: 0, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0, cam: null, radius: 100, vol: null, fit: 1, t0: 0 };
 // AI versions: every network, each with mixes of its own settings (how sure it must
 // be, pad or shave, how much brain stem) and of finish and grid.
+const OWN_KEYS = []; // home-trained models
 const MODEL_SHORT = { partsBig: '18 parts (best)', parts: '18 parts (quicker)', tissue: 'Tissue GWM', tissueFast: 'Tissue GWM (light)', maskFast: 'Brain mask (fast)', mask: 'Brain mask (high accuracy)', areas50: 'Aparc+Aseg 50', areas104: 'Aparc+Aseg 104' };
 function aiVariant(model, ai = {}, finish = 'crisp', voxel = 0) {
   const tags = [MODEL_SHORT[model]];
   if (ai.level) tags.push(ai.level > 0 ? `stricter +${ai.level}` : `looser ${ai.level}`);
+  if (ai.study) tags.push('whole study');
   if (ai.grow) tags.push(ai.grow > 0 ? `padded ${ai.grow} mm` : `shaved ${-ai.grow} mm`);
   if (ai.stump !== undefined && ai.stump !== AI_DEFAULT.stump) tags.push(ai.stump >= 30 ? 'whole brain stem' : `brain stem ${ai.stump} mm`);
   if (voxel) tags.push(voxel < 1 ? 'fine grid' : 'coarse grid');
@@ -1135,6 +1318,28 @@ const AI_VARIANTS = [
   aiVariant('mask', {}, 'crisp', 0.7), aiVariant('mask', { level: 2 }, 'crisp', 0.7), aiVariant('mask', {}, 'smooth'),
   aiVariant('areas50', {}, 'crisp', 0.7), aiVariant('areas50', { level: 2 }, 'crisp', 0.7), aiVariant('areas104', {}, 'crisp', 0.7), aiVariant('areas104', { level: 2 }, 'crisp', 0.7), aiVariant('areas104', {}, 'smooth'),
 ];
+/**
+ * The versions the compare window opens with: the settings that have looked best, on the models
+ * that suit this scan. The owner asked for these first (2026-11-27); the full standard set and
+ * random mixes come only when asked for. What "best" rests on: his verdicts (fine grid with the
+ * crisp finish; a slightly stricter level; never "whole study" averaging, which blurs the folds)
+ * and the model Auto picks for the scan.
+ */
+function bestVariants(stack) {
+  const out = [], seen = new Set();
+  const add = (v) => { const k = variantKey(v); if (!seen.has(k)) { seen.add(k); out.push(v); } };
+  if (app.gpuOK) {
+    const own = Object.values(OWN), firstAuto = own.findIndex((m) => m.auto), top = autoModel(stack);
+    // the model Auto would use, the other home-trained models that have a job, any installed after them (not judged yet), and the 18-part model
+    const models = [top, ...own.filter((m) => m.auto).map((m) => m.key), ...own.slice(0, Math.max(0, firstAuto)).map((m) => m.key), 'partsBig'].filter((k, i, a) => k !== 'classic' && a.indexOf(k) === i);
+    for (const [i, m] of models.entries()) {
+      add(aiVariant(m, {}, 'crisp', 0.7)); add(aiVariant(m, { level: 2 }, 'crisp', 0.7)); add(aiVariant(m, {}, 'smooth', 0.7));
+      if (i === 0) { add(aiVariant(m, { grow: 1 }, 'crisp', 0.7)); add(aiVariant(m, { level: 1 }, 'crisp', 0.7)); add(aiVariant(m, {}, 'clean')); add(aiVariant(m, {}, 'raw', 0.7)); } // padded 1 mm: what the owner liked on his scout with the scout model
+    }
+  }
+  for (const i of [0, 1, 3]) add(MR_VARIANTS[i]); // classic: automatic, the owner's favorite, fine and crisp with the deepest folds
+  return out;
+}
 /** AI versions with mixes not tried on this series yet. */
 function freshAiVariants(stack, count) {
   const tried = stack.triedVariants || (stack.triedVariants = new Set());
@@ -1143,7 +1348,7 @@ function freshAiVariants(stack, count) {
   for (let guard = 0; out.length < count && guard < 4000; guard++) {
     const ai = {}, level = pick([-3, -1, 0, 1, 2, 2, 3, 3, 4, 5]), grow = pick([0, 0, 0, 0, -1, -0.5, 0.5, 1]), stump = pick([8, 8, 8, 8, 0, 16, 30]);
     if (level) ai.level = level; if (grow) ai.grow = grow; if (stump !== AI_DEFAULT.stump) ai.stump = stump;
-    const v = aiVariant(pick(['partsBig', 'partsBig', 'partsBig', 'partsBig', 'parts', 'parts', 'tissue', 'tissue', 'mask', 'tissueFast', 'areas50', 'areas104']), ai, pick(['crisp', 'crisp', 'raw', 'clean', 'smooth', 'xsmooth']), pick([0, 0.7, 0.7, 0.7, 1.4]));
+    const v = aiVariant(pick([...OWN_KEYS, ...OWN_KEYS, ...OWN_KEYS, 'partsBig', 'partsBig', 'partsBig', 'partsBig', 'parts', 'parts', 'tissue', 'tissue', 'mask', 'tissueFast', 'areas50', 'areas104']), ai, pick(['crisp', 'crisp', 'raw', 'clean', 'smooth', 'xsmooth']), pick([0, 0.7, 0.7, 0.7, 1.4]));
     const key = variantKey(v);
     if (tried.has(key)) continue;
     tried.add(key);
@@ -1158,6 +1363,8 @@ function variantWhy(v) {
   if (v.model === 'parts') bits.push('the smaller neural network'); else if (v.model === 'tissue') bits.push('the network that only knows gray and white matter');
   else if (v.model === 'partsBig') bits.push('neural network on the graphics card');
   else if (!v.model && !Object.keys(s).length) bits.push('classic method: outline, and folds by brightness');
+  if (studyModel(v.model)) bits.push('the model looks at up to three series of the study at once, lined up first');
+  else if (v.ai && v.ai.study) bits.push('the model looked at every series of the study and its answers were merged');
   if (v.ai && v.ai.level) bits.push(v.ai.level > 0 ? 'it must be surer that a spot is brain, which opens the folds' : 'it may be less sure that a spot is brain, which fills the folds in');
   if (v.ai && v.ai.grow) bits.push(v.ai.grow > 0 ? `padded ${v.ai.grow} mm all round` : `shaved ${-v.ai.grow} mm all round`);
   if (v.ai && v.ai.stump !== undefined) bits.push(v.ai.stump >= 30 ? 'all of the brain stem the model found is kept' : `${v.ai.stump} mm of brain stem kept below the cerebellum`);
@@ -1242,7 +1449,7 @@ function drawCompare() {
   }
 }
 function closeCompare(keepTile) {
-  cmp.run++; // anything still being built is ignored when it arrives
+  cmp.run++; cmp.others = null; // anything still being built is ignored when it arrives
   for (const t of cmp.tiles) if (t !== keepTile && t.item && t.item.mesh) app.gl.freeMesh(t.item.mesh);
   cmp.tiles = []; cmp.queue = [];
   $('#compare').hidden = true;
@@ -1263,7 +1470,7 @@ function chooseCompare(tile, asDefault) {
   const prev = stack.models;
   if (prev) for (const it of prev.items) if (it.mesh) app.gl.freeMesh(it.mesh);
   const t = TARGETS.find((x) => x.key === 'brain');
-  stack.models = { labels: tile.result.labels, items: [{ ...tile.item, name: t.name, color: [...t.color], opacity: t.opacity, visible: true }] };
+  stack.models = { labels: tile.result.labels, items: [{ ...tile.item, name: t.name, color: [...t.color], opacity: t.opacity, visible: true, how: stack.unit === 'HU' ? null : foundBy(tile.result.used) }] };
   stack.mrUsed = tile.result.used || stack.mrUsed;
   stack.preview = null;
   closeCompare(tile);
@@ -1282,6 +1489,7 @@ function addCompare(variants) {
   let first = null;
   for (const variant of variants) {
     tried.add(variantKey(variant));
+    cmp.keys.add(variantKey(variant));
     const sec = cmp.sec[variant.model ? 'ai' : 'classic'];
     const canvas = h('canvas', {}), status = h('div', { class: 'cmp-status' }, 'Waiting…'), why = variantWhy(variant);
     const tile = { variant, canvas, ctx: canvas.getContext('2d'), status, item: null, result: null };
@@ -1321,6 +1529,7 @@ function addCompare(variants) {
     try {
       const how = v.model === 'auto' ? autoModel(stack) : v.model || 'classic';
       const opts = buildOptions(stack, ['brain'], how === 'classic' ? { model: how, ...mrFromRaw({ ...MR_DEFAULT, ...v.set }) } : aiFromRaw(how, { ...AI_DEFAULT, ...(v.ai || {}) }));
+      if (opts.mr.study) opts.others = await (cmp.others || (cmp.others = studyVolumes(stack)));
       opts.finish = { ...CMP_FINISH[v.finish || 'clean'].values };
       if (v.voxel) opts.voxel = v.voxel;
       // a build that never answers (its worker died without a word) must not hold up the rest
@@ -1375,7 +1584,7 @@ function addCompare(variants) {
 function openCompare() {
   const vol = app.volume;
   if (!vol || app.building || vol.stack.unit === 'HU') return;
-  cmp.run++;
+  cmp.run++; cmp.others = null;
   Object.assign(cmp, { vol, cam: null, fit: 1, tiles: [], queue: [], busy: 0, used: 0, load: 0, done: 0 });
   $('#compare').hidden = false;
   // two groups, each with its own heading: what the AI models make, and what the classic method makes
@@ -1393,7 +1602,8 @@ function openCompare() {
     ai: section('AI models', app.gpuOK ? '' : 'not available here: they need WebGPU (a current Chrome or Edge with a graphics card)'),
     classic: section('Classic method (outline and folds)', ''),
   };
-  addCompare(app.gpuOK ? [...AI_VARIANTS, ...MR_VARIANTS] : MR_VARIANTS);
+  cmp.keys = new Set();
+  addCompare(bestVariants(vol.stack));
 }
 function initCompare() {
   $('#btn-compare').onclick = openCompare;
@@ -1403,6 +1613,13 @@ function initCompare() {
     for (const s of Object.values(cmp.sec)) s.grid.parentElement.open = true;
     if (!more.length) return toast('Every combination has been tried on this series.');
     const first = addCompare(more);
+    if (first) first.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  $('#cmp-all').onclick = () => {
+    const rest = (app.gpuOK ? [...AI_VARIANTS, ...MR_VARIANTS] : MR_VARIANTS).filter((v) => !cmp.keys.has(variantKey(v)));
+    if (!rest.length) return toast('All the standard versions are shown already.');
+    for (const s of Object.values(cmp.sec)) s.grid.parentElement.open = true;
+    const first = addCompare(rest);
     if (first) first.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   for (const b of document.querySelectorAll('#cmp-look button')) b.onclick = () => cmpLook(b.dataset.v);
@@ -1484,7 +1701,12 @@ async function build() {
   setProg(0, 'Preparing…');
   const stack = vol.stack;
   try {
-    const result = await buildModels(vol, buildOptions(stack, keys, readMr()), setProg);
+    const opts = buildOptions(stack, keys, readMr());
+    if (opts.mr.study && opts.mr.model !== 'classic') opts.others = await studyVolumes(stack, (text) => setProg(0, text));
+    const fix = stack.fix && stack.fix.count ? stack.fix : null, fixVersion = fix ? fix.version : 0;
+    if (fix && keys.includes('brain')) opts.fix = { data: fix.data };
+    const result = await buildModels(vol, opts, setProg);
+    if (stack.fix) stack.fix.built = stack.fix === fix ? fixVersion : stack.fix.version;
     const prev = stack.models;
     if (prev) for (const it of prev.items) if (it.mesh) app.gl.freeMesh(it.mesh);
     const old = new Map((prev?.items || []).map((i) => [i.key, i]));
@@ -1492,16 +1714,17 @@ async function build() {
       labels: result.labels,
       items: result.items.map((it) => {
         const t = TARGETS.find((x) => x.key === it.key), o = old.get(it.key);
-        return { ...it, name: t.name, color: o ? o.color : [...t.color], opacity: o ? o.opacity : t.opacity, visible: true };
+        return { ...it, name: t.name, color: o ? o.color : [...t.color], opacity: o ? o.opacity : t.opacity, visible: true, how: it.key === 'brain' && opts.modality === 'MR' ? foundBy(result.used) : null };
       }),
     };
     stack.preview = null; preview.want = false; // the slices now show the finished models
     pvStatus('');
     app.lastUsed = result.used || null;
     if (result.used) { stack.mrUsed = result.used; if (app.volume && app.volume.stack === stack) showMr(readMrRaw()); }
-    app.lastBuild = { seconds: result.seconds, ...result.timing, parts: Object.fromEntries(result.items.map((i) => [i.key, i.seconds])) };
+    app.lastBuild = { seconds: result.seconds, fixed: result.fixed || 0, ...result.timing, parts: Object.fromEntries(result.items.map((i) => [i.key, i.seconds])) };
     setProg(1, `Done in ${result.seconds.toFixed(1)} s`);
     renderModels();
+    showFix();
     setR3('show', 'models');
   } catch (err) {
     console.error(err);
@@ -1656,7 +1879,7 @@ async function entriesToFiles(items) {
 
 // --------------------------------------------------------------- wiring ----
 function init() {
-  buildViews(); buildToolbar();
+  buildViews(); buildToolbar(); initFix();
   for (const b of document.querySelectorAll('#mode-switch button')) b.onclick = () => setMode(b.dataset.mode);
   $('#btn-details').onclick = showDetails;
   $('#btn-help').onclick = showHelp;
@@ -1671,6 +1894,16 @@ function init() {
   $('#r3-iso').oninput = (e) => setIso(e.target.value);
   for (const key of ['show', 'mode']) for (const b of document.querySelectorAll(`#r3-${key} button`)) b.onclick = () => setR3(key, b.dataset.v);
   for (const b of document.querySelectorAll('#r3-look button')) b.onclick = () => app.views.find((v) => v.kind === '3d')?.look(b.dataset.v);
+  app.cut.follow = store.get('cutfollow', '') === '1';
+  const showFollow = () => { $('#cut-follow').checked = app.cut.follow; $('#cut-axis').disabled = $('#cut-pos').disabled = app.cut.follow; };
+  showFollow();
+  $('#cut-follow').onchange = (e) => {
+    app.cut.follow = e.target.checked;
+    store.set('cutfollow', app.cut.follow ? '1' : '');
+    showFollow();
+    if (app.cut.follow && app.r3d.show !== 'models' && app.meshItems().length) setR3('show', 'models');
+    app.redrawAll();
+  };
   $('#cut-axis').onchange = (e) => {
     app.cut.axis = e.target.value;
     if (app.cut.axis && app.r3d.show !== 'models' && app.meshItems().length) setR3('show', 'models');
@@ -1682,6 +1915,17 @@ function init() {
     if (app.r3d.show !== 'models' && app.meshItems().length) setR3('show', 'models');
     app.redrawAll();
   };
+  display.leftOnLeft = store.get('leftonleft', '') === '1';
+  display.unwrap = store.get('unwrap', '1') === '1';
+  $('#unwrap').checked = display.unwrap;
+  $('#unwrap').onchange = (e) => {
+    display.unwrap = e.target.checked;
+    store.set('unwrap', display.unwrap ? '1' : '0');
+    // every scan is laid out again; hand-made marks belong to one layout and are read again for the new one
+    for (const s of app.stacks.values()) { s.volume = null; s.fix = null; s.fixAsked = false; s.preview = null; }
+    if (app.mode === '3d' && app.volume) open3D(app.volume.stack);
+  };
+  updateToolbar();
   app.showOverlay = store.get('overlay', '1') === '1';
   $('#show-overlay').checked = app.showOverlay;
   $('#show-overlay').onchange = (e) => { if (e.target.checked !== app.showOverlay) toggleOverlay(); };
@@ -1733,6 +1977,7 @@ function init() {
   });
 
   window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && app.mode === '3d' && app.tool === 'fix' && !e.target.matches('input, select, textarea')) { fixUndo(); e.preventDefault(); return; }
     if (e.target.matches('input, select, textarea') || e.ctrlKey || e.metaKey || e.altKey || $('#dialog').open) return;
     const v = app.active;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -1746,6 +1991,8 @@ function init() {
     else if (k === 'r') resetView();
     else if (k === 'i') invert();
     else if (k === 't' && app.mode === '3d') toggleOverlay();
+    else if (k === 'f' && app.mode === '3d') setTool('fix');
+    else if ((k === '[' || k === ']') && app.tool === 'fix') fixSize(k === ']' ? 1 : -1);
     else if (k === 'Delete' || k === 'Backspace') {
       const s = currentStack();
       if (s && app.selected) { const i = s.annots.indexOf(app.selected); if (i >= 0) s.annots.splice(i, 1); app.selected = null; app.redrawAll(); }

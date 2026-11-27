@@ -50,6 +50,26 @@
   <main id="views"></main>
 
   <aside id="panel3d">
+    <section id="fix-panel" hidden>
+      <h3>Fix the brain by hand</h3>
+      <p class="hint">Paint on any of the three slice pictures where the colored brain is wrong, then update the 3D model. The mouse wheel moves through the slices; the <b>T</b> key turns the colors off and on, so you can see the scan underneath.</p>
+      <div class="seg wide" id="fix-mode">
+        <button data-v="1" class="on" title="Paint where brain is missing (green)">This is brain</button>
+        <button data-v="2" title="Paint where something that is not brain was colored in: fluid in a fold, skull, membrane (orange)">Not brain</button>
+        <button data-v="0" title="Take your own marks away again">Rub out</button>
+      </div>
+      <div class="seg wide" id="fix-shape">
+        <button data-v="brush" class="on" title="Drag to paint with a round brush">Brush</button>
+        <button data-v="lasso" title="Draw a line around an area; everything inside it is marked">Draw around</button>
+      </div>
+      <label class="row" id="fix-size-row" title="Keys [ and ] also change it"><span>Brush size</span><input type="range" id="fix-size" min="1" max="40" step="1" value="8"><output id="fix-size-out"></output></label>
+      <div class="chips">
+        <button id="fix-undo" title="Take back the last stroke (Ctrl+Z)">Undo</button>
+        <button id="fix-clear" title="Take away every mark on this series. Undo brings them back.">Remove all marks</button>
+      </div>
+      <button class="btn primary big" id="fix-build" title="Builds the 3D models again; your marks win over the brain finder">Update the 3D model</button>
+      <div id="fix-status" class="hint"></div>
+    </section>
     <section>
       <h3>3D view</h3>
       <div class="seg wide" id="r3-show"><button data-v="volume" class="on">Scan</button><button data-v="models">Models</button></div>
@@ -58,6 +78,8 @@
         <label class="row" id="r3-iso-row"><span>Surface level</span><input type="range" id="r3-iso"><output id="r3-iso-out"></output></label>
         <div class="chips" id="r3-presets"></div>
       </div>
+      <label class="check" id="unwrap-row" title="On some MRI scans a part that stuck out of the measured box (often the tip of the nose on a quick overview scan) is drawn on the opposite side, floating behind the head. This moves it back where it belongs. Untick it if a scan looks wrong with it."><input type="checkbox" id="unwrap" checked> Put wrapped-around parts back in place</label>
+      <p class="hint" id="unwrap-note" hidden></p>
       <div class="chips" id="r3-look">
         <button data-v="A" title="From the front">Front</button><button data-v="P">Back</button><button data-v="L">Left</button>
         <button data-v="R">Right</button><button data-v="S">Top</button><button data-v="I">Bottom</button>
@@ -121,6 +143,7 @@
         <label class="row" title="How sure the model must be that a spot is brain before it counts. Stricter opens the folds wider and trims the edge; looser fills the folds in."><span>How sure it must be</span><input type="range" id="a-level" min="-5" max="5" step="1"><output></output></label>
         <label class="row" title="Moves the finished surface out or in by this much everywhere."><span>Pad or shave</span><input type="range" id="a-grow" min="-2" max="2" step="0.5"><output></output></label>
         <label class="row" title="How much of the brain stem is kept below the cerebellum. Further down the model sometimes mistakes parts of the neck for brain."><span>Brain stem kept</span><input type="range" id="a-stump" min="0" max="30" step="2"><output></output></label>
+        <label class="check" id="a-study-row" title="A hospital study is the same head scanned several times, with thick slices in different directions. With this ticked the model looks at every series and its answers are averaged. The overall shape gets steadier and stray bumps go, but folds that only one series shows are smoothed away. Takes a few seconds per series the first time."><input type="checkbox" id="a-study"> Use every series of this study (steadier shape, softer folds)</label>
         <label class="check" title="Tints the slices with what the model found, without building the 3D model."><input type="checkbox" id="a-live" checked> Show what the model found on the slices</label>
         <div id="a-status"></div>
         <button class="btn" id="a-reset" type="button">Back to automatic</button>
@@ -167,6 +190,7 @@
           <select id="cut-axis"><option value="">Off</option><option value="S">From top</option><option value="A">From front</option><option value="L">From left</option></select>
         </label>
         <input type="range" id="cut-pos" min="0" max="100" value="50">
+        <label class="check" title="The 3D model is cut open at the slice you are looking at: scroll through the top-down, front or side pictures and the cut moves along. Untick to scroll without cutting."><input type="checkbox" id="cut-follow"> Cut the model open at the slice I scroll to</label>
         <label class="check"><input type="checkbox" id="show-overlay" checked> Color the models on the slices</label>
       </div>
     </section>
@@ -182,6 +206,7 @@
     <div class="chips" id="cmp-look">
       <button data-v="A">Front</button><button data-v="P">Back</button><button data-v="L">Left</button><button data-v="R">Right</button><button data-v="S">Top</button><button data-v="I">Bottom</button>
     </div>
+    <button class="btn" id="cmp-all" title="The window opens with the versions that have looked best for this kind of scan. This adds the whole standard set: every AI model and about thirty classic mixes, some seventy in all. Takes a minute or two.">Show all the standard versions</button>
     <button class="btn" id="cmp-more" title="Adds thirty more versions (AI models and classic), each with a mix of settings that has not been tried on this series yet">Try 30 more that have not been tried</button>
     <button class="btn" id="cmp-close">Close without choosing</button>
   </header>
