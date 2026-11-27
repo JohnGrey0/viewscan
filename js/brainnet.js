@@ -77,6 +77,7 @@ export async function loadModel(key) {
 /**
  * The scan in the standard cube: 256 x 256 x 256 voxels of 1 mm, centered on the
  * scan, brightness 0 to 255 (the darkest and brightest 2% are clipped).
+ * opts.c0 and opts.axes place the cube somewhere else (used to line one series up with another).
  * @returns {{data:Uint8Array, c0:number[], axes:number[][]}} c0 = patient position of voxel (0,0,0)
  */
 export function conform(vol, opts = {}) {
@@ -93,7 +94,7 @@ export function conform(vol, opts = {}) {
   const center = [0, 1, 2].map((c) => origin[c] + (nx - 1) / 2 * dx[c] + (ny - 1) / 2 * dy[c] + (nz - 1) / 2 * dz[c]);
   const half = (S - 1) / 2;
   const AX = opts.axes || AXES;
-  const c0 = [0, 1, 2].map((c) => center[c] - half * (AX[0][c] + AX[1][c] + AX[2][c]));
+  const c0 = opts.c0 || [0, 1, 2].map((c) => center[c] - half * (AX[0][c] + AX[1][c] + AX[2][c]));
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const cr = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   const r0 = cr(dy, dz), r1 = cr(dz, dx), r2 = cr(dx, dy), det = dot(dx, r0);
@@ -266,47 +267,13 @@ async function getDevice(bytes) {
 }
 
 /**
- * Runs a model on a scan.
- * @param {{nx,ny,nz,data,origin,dx,dy,dz}} vol
- * @param {string} key  a key of MODELS
- * @param {(fraction:number, text:string)=>void} [onProgress]
- * @returns {Promise<{labels:Uint8Array, prob:Uint8Array, c0:number[], axes:number[][], classes:number, ms:number, box:number[]}>}
- *   labels and prob (0-255: how sure that a voxel is brain) fill the standard cube.
+ * Runs the layers on the graphics card. input holds D x H x W voxels with the model's
+ * number of inputs each (channel last). Returns two numbers per voxel: the class and
+ * how sure it is brain (0 to 1).
  */
-export async function runModel(vol, key, onProgress = () => {}, opts = {}) {
-  const t0 = performance.now();
-  onProgress(0, 'Loading the brain model…');
-  const model = await loadModel(key);
-  onProgress(0.03, 'Preparing the scan for the model…');
-  const cube = conform(vol, opts), S = SIZE, img = cube.data;
-  // brightness the way the model was trained: by quantiles or by the brightest value, over the whole cube
-  const hist = new Uint32Array(256);
-  for (let i = 0; i < img.length; i++) hist[img[i]]++;
-  const rank = (q) => { let n = Math.floor(q * (img.length - 1)), v = 0; while (v < 255 && n >= hist[v]) n -= hist[v++]; return v; };
-  let sub = 0, div = 255;
-  if (model.def.quantile) { sub = rank(0.05); div = Math.max(1, rank(0.95) - sub); } else { let m = 255; while (m > 1 && !hist[m]) m--; div = m; }
-  let max = 255; while (max > 1 && !hist[max]) max--;
-  // crop: to the box the fast mask model finds the brain in, or to what is not empty air
-  const lo = [S, S, S], hi = [-1, -1, -1];
-  let pre = null;
-  if (model.def.pre) pre = (await runModel(vol, model.def.pre, (p, text) => onProgress(0.03 + 0.12 * p, text), opts)).labels;
-  const cut = sub + model.def.thr * (max - sub);
-  for (let d = 0, o = 0; d < S; d++) for (let h = 0; h < S; h++) for (let w = 0; w < S; w++, o++) {
-    if (pre ? !pre[o] : img[o] <= cut) continue;
-    if (d < lo[0]) lo[0] = d; if (d > hi[0]) hi[0] = d; if (h < lo[1]) lo[1] = h; if (h > hi[1]) hi[1] = h; if (w < lo[2]) lo[2] = w; if (w > hi[2]) hi[2] = w;
-  }
-  if (hi[0] < 0) throw new Error('The scan looks empty to the brain model.');
-  const box = [lo.slice(), hi.slice()], pad = model.def.pad;
-  for (let a = 0; a < 3; a++) { lo[a] = Math.max(0, lo[a] - pad); hi[a] = Math.min(S - 1, hi[a] + pad); }
-  const D = hi[0] - lo[0] + 1, H = hi[1] - lo[1] + 1, W = hi[2] - lo[2] + 1, V = D * H * W;
-  const input = new Float32Array(V);
-  for (let d = 0, o = 0; d < D; d++) for (let h = 0; h < H; h++) { let i = ((d + lo[0]) * S + h + lo[1]) * S + lo[2]; for (let w = 0; w < W; w++, o++, i++) input[o] = (img[i] - sub) / div; }
-  // the padding round the crop is empty, as it was when the model was trained
-  if (pad) for (let d = 0, o = 0; d < D; d++) for (let h = 0; h < H; h++) for (let w = 0; w < W; w++, o++) {
-    const dd = d + lo[0], hh = h + lo[1], ww = w + lo[2];
-    if (dd < box[0][0] || dd > box[1][0] || hh < box[0][1] || hh > box[1][1] || ww < box[0][2] || ww > box[1][2]) input[o] = 0;
-  }
-
+async function forward(model, input, D, H, W, onProgress = () => {}) {
+  const V = D * H * W;
+  if (input.length !== V * model.layers[0].cin) throw new Error('Unexpected model layout');
   const C = Math.max(2, ...model.layers.slice(0, -1).map((l) => l.cout));
   const { device, conv, head } = await getDevice(V * C * 4);
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
@@ -314,7 +281,7 @@ export async function runModel(vol, key, onProgress = () => {}, opts = {}) {
   const uni = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const garbage = [...bufs, uni];
   try {
-    for (let o = 0; o < V; o += 1 << 22) device.queue.writeBuffer(bufs[0], o * 4, input, o, Math.min(1 << 22, V - o));
+    for (let o = 0; o < input.length; o += 1 << 22) device.queue.writeBuffer(bufs[0], o * 4, input, o, Math.min(1 << 22, input.length - o));
     const SLAB = 16, slabs = Math.ceil(D / SLAB), total = model.layers.length * slabs;
     let done = 0, from = 0;
     for (let li = 0; li < model.layers.length; li++) {
@@ -349,13 +316,237 @@ export async function runModel(vol, key, onProgress = () => {}, opts = {}) {
     enc.copyBufferToBuffer(bufs[from], 0, read, 0, V * 8);
     device.queue.submit([enc.finish()]);
     await read.mapAsync(GPUMapMode.READ);
-    const res = new Float32Array(read.getMappedRange());
-    const labels = new Uint8Array(S * S * S), prob = new Uint8Array(S * S * S);
-    for (let d = 0, o = 0; d < D; d++) for (let h = 0; h < H; h++) { let i = ((d + lo[0]) * S + h + lo[1]) * S + lo[2]; for (let w = 0; w < W; w++, o++, i++) { labels[i] = res[o * 2]; prob[i] = Math.round(res[o * 2 + 1] * 255); } }
+    const res = new Float32Array(read.getMappedRange()).slice();
     read.unmap();
-    onProgress(1, 'Brain model done');
-    return { labels, prob, c0: cube.c0, axes: cube.axes, classes: model.classes, ms: performance.now() - t0, box: [D, H, W] };
+    return res;
   } finally {
     for (const b of garbage) b.destroy();
   }
+}
+
+/**
+ * Runs a model on a scan.
+ * @param {{nx,ny,nz,data,origin,dx,dy,dz}} vol
+ * @param {string} key  a key of MODELS
+ * @param {(fraction:number, text:string)=>void} [onProgress]
+ * @returns {Promise<{labels:Uint8Array, prob:Uint8Array, c0:number[], axes:number[][], classes:number, ms:number, box:number[]}>}
+ *   labels and prob (0-255: how sure that a voxel is brain) fill the standard cube.
+ */
+export async function runModel(vol, key, onProgress = () => {}, opts = {}) {
+  const t0 = performance.now();
+  onProgress(0, 'Loading the brain model…');
+  const model = await loadModel(key);
+  if (model.def.inputs > 1) return runStudy(vol, model, onProgress, opts, t0);
+  onProgress(0.03, 'Preparing the scan for the model…');
+  const cube = conform(vol, opts), S = SIZE, img = cube.data;
+  // brightness the way the model was trained: by quantiles or by the brightest value, over the whole cube
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < img.length; i++) hist[img[i]]++;
+  const rank = (q) => { let n = Math.floor(q * (img.length - 1)), v = 0; while (v < 255 && n >= hist[v]) n -= hist[v++]; return v; };
+  let sub = 0, div = 255;
+  if (model.def.quantile) { sub = rank(0.05); div = Math.max(1, rank(0.95) - sub); } else { let m = 255; while (m > 1 && !hist[m]) m--; div = m; }
+  let max = 255; while (max > 1 && !hist[max]) max--;
+  // crop: to the box the fast mask model finds the brain in, or to what is not empty air
+  const lo = [S, S, S], hi = [-1, -1, -1];
+  let pre = null;
+  if (model.def.pre) pre = (await runModel(vol, model.def.pre, (p, text) => onProgress(0.03 + 0.12 * p, text), opts)).labels;
+  const cut = sub + model.def.thr * (max - sub);
+  for (let d = 0, o = 0; d < S; d++) for (let h = 0; h < S; h++) for (let w = 0; w < S; w++, o++) {
+    if (pre ? !pre[o] : img[o] <= cut) continue;
+    if (d < lo[0]) lo[0] = d; if (d > hi[0]) hi[0] = d; if (h < lo[1]) lo[1] = h; if (h > hi[1]) hi[1] = h; if (w < lo[2]) lo[2] = w; if (w > hi[2]) hi[2] = w;
+  }
+  if (hi[0] < 0) throw new Error('The scan looks empty to the brain model.');
+  const box = [lo.slice(), hi.slice()], pad = model.def.pad;
+  for (let a = 0; a < 3; a++) { lo[a] = Math.max(0, lo[a] - pad); hi[a] = Math.min(S - 1, hi[a] + pad); }
+  const D = hi[0] - lo[0] + 1, H = hi[1] - lo[1] + 1, W = hi[2] - lo[2] + 1, V = D * H * W;
+  const input = new Float32Array(V);
+  for (let d = 0, o = 0; d < D; d++) for (let h = 0; h < H; h++) { let i = ((d + lo[0]) * S + h + lo[1]) * S + lo[2]; for (let w = 0; w < W; w++, o++, i++) input[o] = (img[i] - sub) / div; }
+  // the padding round the crop is empty, as it was when the model was trained
+  if (pad) for (let d = 0, o = 0; d < D; d++) for (let h = 0; h < H; h++) for (let w = 0; w < W; w++, o++) {
+    const dd = d + lo[0], hh = h + lo[1], ww = w + lo[2];
+    if (dd < box[0][0] || dd > box[1][0] || hh < box[0][1] || hh > box[1][1] || ww < box[0][2] || ww > box[1][2]) input[o] = 0;
+  }
+
+  const res = await forward(model, input, D, H, W, onProgress);
+  const labels = new Uint8Array(S * S * S), prob = new Uint8Array(S * S * S);
+  for (let d = 0, o = 0; d < D; d++) for (let h = 0; h < H; h++) { let i = ((d + lo[0]) * S + h + lo[1]) * S + lo[2]; for (let w = 0; w < W; w++, o++, i++) { labels[i] = res[o * 2]; prob[i] = Math.round(res[o * 2 + 1] * 255); } }
+  onProgress(1, 'Brain model done');
+  return { labels, prob, c0: cube.c0, axes: cube.axes, classes: model.classes, ms: performance.now() - t0, box: [D, H, W] };
+}
+
+// ---- study models: one network that looks at up to three series of a study at once ----
+// A study model (trained with viewscan-train, "inputs": 3 in its description) has one
+// input per slice direction: 0 = slices stacked side to side, 1 = top to bottom, 2 = front
+// to back. A missing direction is left empty. The other series are first lined up with
+// the scan in view: the head moves a little between series, and even one degree costs
+// the model what the extra series give it.
+
+/** Which cube direction a series' slices are stacked along. */
+function stackAxis(vol, AX = AXES) {
+  let best = 0, top = -1;
+  for (let k = 0; k < 3; k++) { const v = Math.abs(AX[k][0] * vol.dz[0] + AX[k][1] * vol.dz[1] + AX[k][2] * vol.dz[2]); if (v > top) { top = v; best = k; } }
+  return best;
+}
+
+/** Averages a cube of bytes over f x f x f blocks; values 0 to 1. */
+function shrink(src, f) {
+  const S = SIZE, n = S / f, out = new Float32Array(n * n * n), k = 1 / (255 * f * f * f);
+  for (let d = 0; d < S; d++) for (let h = 0; h < S; h++) { const o = ((d / f | 0) * n + (h / f | 0)) * n, i = (d * S + h) * S; for (let w = 0; w < S; w++) out[o + (w / f | 0)] += src[i + w]; }
+  for (let i = 0; i < out.length; i++) out[i] *= k;
+  return out;
+}
+
+/**
+ * Lines one "how sure it is brain" cube up with another: finds the small turn and
+ * shift for which moving(R (q - mid) + mid + t) matches fixed(q), q in cube voxels.
+ * Coarse to fine, each step the least-squares best correction (Gauss-Newton).
+ * @returns {{R:number[][], t:number[], turn:number, shift:number, fit:number}} turn in degrees, shift in mm,
+ *   fit = how well the two brains overlap afterwards (0 to 1)
+ */
+export function alignProb(moving, fixed) {
+  let R = [[1, 0, 0], [0, 1, 0], [0, 0, 1]], t = [0, 0, 0]; // t in full-size voxels
+  let fit = 0;
+  for (const [f, rounds] of [[8, 12], [4, 12], [2, 8]]) {
+    const n = SIZE / f, M = shrink(moving, f), F = shrink(fixed, f), mid = (n - 1) / 2, nn = n * n;
+    const tt = t.map((v) => v / f);
+    for (let it = 0; it <= rounds; it++) {
+      const H = new Float64Array(36), g = new Float64Array(6), J = new Float64Array(6);
+      let both = 0, either = 0;
+      for (let d = 0, i = 0; d < n; d++) for (let h = 0; h < n; h++) for (let w = 0; w < n; w++, i++) {
+        const x0 = d - mid, x1 = h - mid, x2 = w - mid;
+        const r0 = R[0][0] * x0 + R[0][1] * x1 + R[0][2] * x2, r1 = R[1][0] * x0 + R[1][1] * x1 + R[1][2] * x2, r2 = R[2][0] * x0 + R[2][1] * x1 + R[2][2] * x2;
+        const y0 = r0 + tt[0] + mid, y1 = r1 + tt[1] + mid, y2 = r2 + tt[2] + mid;
+        const fv = F[i];
+        let m = 0, g0 = 0, g1 = 0, g2 = 0;
+        if (y0 >= 0 && y1 >= 0 && y2 >= 0 && y0 < n - 1 && y1 < n - 1 && y2 < n - 1) {
+          const a = y0 | 0, b = y1 | 0, c = y2 | 0, u = y0 - a, v = y1 - b, s = y2 - c, o = (a * n + b) * n + c;
+          const c000 = M[o], c001 = M[o + 1], c010 = M[o + n], c011 = M[o + n + 1], c100 = M[o + nn], c101 = M[o + nn + 1], c110 = M[o + nn + n], c111 = M[o + nn + n + 1];
+          const e00 = c000 + (c001 - c000) * s, e01 = c010 + (c011 - c010) * s, e10 = c100 + (c101 - c100) * s, e11 = c110 + (c111 - c110) * s;
+          const p0 = e00 + (e01 - e00) * v, p1 = e10 + (e11 - e10) * v;
+          m = p0 + (p1 - p0) * u;
+          g0 = p1 - p0;
+          g1 = (e01 - e00) * (1 - u) + (e11 - e10) * u;
+          const q00 = c001 - c000, q01 = c011 - c010, q10 = c101 - c100, q11 = c111 - c110;
+          g2 = (q00 + (q01 - q00) * v) * (1 - u) + (q10 + (q11 - q10) * v) * u;
+        }
+        if (m > 0.5 || fv > 0.5) { either++; if (m > 0.5 && fv > 0.5) both++; }
+        if (g0 === 0 && g1 === 0 && g2 === 0) continue;
+        const r = m - fv;
+        J[0] = r1 * g2 - r2 * g1; J[1] = r2 * g0 - r0 * g2; J[2] = r0 * g1 - r1 * g0; J[3] = g0; J[4] = g1; J[5] = g2;
+        for (let p = 0; p < 6; p++) { g[p] += J[p] * r; for (let q = p; q < 6; q++) H[p * 6 + q] += J[p] * J[q]; }
+      }
+      fit = either ? both / either : 0;
+      if (it === rounds) break; // the last pass only measures
+      for (let p = 0; p < 6; p++) { for (let q = 0; q < p; q++) H[p * 6 + q] = H[q * 6 + p]; H[p * 7] = H[p * 7] * 1.01 + 1e-9; }
+      const dlt = solve6(H, g);
+      if (!dlt) break;
+      // turn by the small rotation, then shift
+      const wv = [-dlt[0], -dlt[1], -dlt[2]], ang = Math.hypot(wv[0], wv[1], wv[2]);
+      if (ang > 1e-12) {
+        const k = wv.map((v) => v / ang), c = Math.cos(ang), s = Math.sin(ang), C1 = 1 - c;
+        const E = [[c + k[0] * k[0] * C1, k[0] * k[1] * C1 - k[2] * s, k[0] * k[2] * C1 + k[1] * s], [k[1] * k[0] * C1 + k[2] * s, c + k[1] * k[1] * C1, k[1] * k[2] * C1 - k[0] * s], [k[2] * k[0] * C1 - k[1] * s, k[2] * k[1] * C1 + k[0] * s, c + k[2] * k[2] * C1]];
+        R = E.map((row) => [0, 1, 2].map((j) => row[0] * R[0][j] + row[1] * R[1][j] + row[2] * R[2][j]));
+      }
+      for (let a = 0; a < 3; a++) tt[a] -= dlt[3 + a];
+      if (ang < 2e-5 && Math.hypot(dlt[3], dlt[4], dlt[5]) < 2e-3) it = rounds - 1; // settled: one measuring pass and on
+    }
+    t = tt.map((v) => v * f);
+  }
+  const turn = Math.acos(Math.max(-1, Math.min(1, (R[0][0] + R[1][1] + R[2][2] - 1) / 2))) * 180 / Math.PI;
+  return { R, t, turn, shift: Math.hypot(t[0], t[1], t[2]), fit };
+}
+
+/** Solves the 6 x 6 system H x = g (Gauss elimination with pivoting); null when it has no answer. */
+function solve6(H, g) {
+  const A = [];
+  for (let i = 0; i < 6; i++) A.push([...H.subarray(i * 6, i * 6 + 6), g[i]]);
+  for (let c = 0; c < 6; c++) {
+    let p = c;
+    for (let r = c + 1; r < 6; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    if (Math.abs(A[p][c]) < 1e-12) return null;
+    [A[c], A[p]] = [A[p], A[c]];
+    for (let r = c + 1; r < 6; r++) { const k = A[r][c] / A[c][c]; for (let q = c; q < 7; q++) A[r][q] -= k * A[c][q]; }
+  }
+  const x = new Array(6);
+  for (let c = 5; c >= 0; c--) { let v = A[c][6]; for (let q = c + 1; q < 6; q++) v -= A[c][q] * x[q]; x[c] = v / A[c][c]; }
+  return x;
+}
+
+/** Where to put the cube so that a series comes out lined up: the cube of the scan in view, turned and shifted. */
+function movedCube(c0, AX, R, t) {
+  const mid = (SIZE - 1) / 2;
+  const axes = [0, 1, 2].map((j) => [0, 1, 2].map((c) => R[0][j] * AX[0][c] + R[1][j] * AX[1][c] + R[2][j] * AX[2][c]));
+  const off = [0, 1, 2].map((k) => mid + t[k] - (R[k][0] + R[k][1] + R[k][2]) * mid);
+  return { axes, c0: [0, 1, 2].map((c) => c0[c] + AX[0][c] * off[0] + AX[1][c] * off[1] + AX[2][c] * off[2]) };
+}
+
+/**
+ * Runs a study model: the scan in view plus, from opts.others, one series for each
+ * other slice direction.
+ */
+async function runStudy(vol, model, onProgress, opts, t0) {
+  const S = SIZE, N = S * S * S, def = model.def, cin = model.layers[0].cin;
+  onProgress(0.02, 'Preparing the scan for the model…');
+  const cube = conform(vol, opts), mine = stackAxis(vol, cube.axes);
+  // one partner per free direction: the one with the finest picture, then the thinnest slices
+  const len = (v) => Math.hypot(v[0], v[1], v[2]);
+  const pick = new Array(cin).fill(null);
+  let offered = 0;
+  for (const o of opts.others || []) {
+    const a = stackAxis(o, cube.axes);
+    if (a === mine || a >= cin) continue;
+    offered++;
+    const rank = [Math.max(len(o.dx), len(o.dy)), len(o.dz)];
+    if (!pick[a] || rank[0] < pick[a].rank[0] - 0.05 || (Math.abs(rank[0] - pick[a].rank[0]) <= 0.05 && rank[1] < pick[a].rank[1])) pick[a] = { vol: o, rank };
+  }
+  const partners = pick.map((p, a) => p && { a, vol: p.vol }).filter(Boolean);
+  const runs = partners.length ? partners.length + 2 : 1;
+  let ran = 0;
+  // the network on a set of cubes (null = that direction is missing): crop to what is not empty air in any of them
+  const net = async (cubes, text) => {
+    const lo = [S, S, S], hi = [-1, -1, -1], top = cubes.map(() => 1);
+    cubes.forEach((img, c) => {
+      if (!img) return;
+      let m = 1; for (let i = 0; i < N; i++) if (img[i] > m) m = img[i];
+      top[c] = m;
+      const cut = def.thr * m;
+      for (let d = 0, o = 0; d < S; d++) for (let h = 0; h < S; h++) for (let w = 0; w < S; w++, o++) {
+        if (img[o] <= cut) continue;
+        if (d < lo[0]) lo[0] = d; if (d > hi[0]) hi[0] = d; if (h < lo[1]) lo[1] = h; if (h > hi[1]) hi[1] = h; if (w < lo[2]) lo[2] = w; if (w > hi[2]) hi[2] = w;
+      }
+    });
+    if (hi[0] < 0) throw new Error('The scan looks empty to the brain model.');
+    const D = hi[0] - lo[0] + 1, H = hi[1] - lo[1] + 1, W = hi[2] - lo[2] + 1;
+    const input = new Float32Array(D * H * W * cin);
+    cubes.forEach((img, c) => {
+      if (!img) return;
+      for (let d = 0, o = c; d < D; d++) for (let h = 0; h < H; h++) { let i = ((d + lo[0]) * S + h + lo[1]) * S + lo[2]; for (let w = 0; w < W; w++, o += cin, i++) input[o] = img[i] / top[c]; }
+    });
+    const k = ran++;
+    const res = await forward(model, input, D, H, W, (p, t) => onProgress(0.05 + 0.94 * (k + p) / runs, text || t));
+    const labels = new Uint8Array(N), prob = new Uint8Array(N);
+    for (let d = 0, o = 0; d < D; d++) for (let h = 0; h < H; h++) { let i = ((d + lo[0]) * S + h + lo[1]) * S + lo[2]; for (let w = 0; w < W; w++, o++, i++) { labels[i] = res[o * 2]; prob[i] = Math.round(res[o * 2 + 1] * 255); } }
+    return { labels, prob, box: [D, H, W] };
+  };
+  const alone = (img, a) => { const c = new Array(cin).fill(null); c[a] = img; return c; };
+  const base = await net(alone(cube.data, mine), partners.length ? 'The brain model looks at this series on its own first…' : '');
+  const moved = [];
+  let out = base;
+  if (partners.length) {
+    const cubes = alone(cube.data, mine);
+    for (const [k, p] of partners.entries()) {
+      const first = conform(p.vol, { ...opts, c0: cube.c0, axes: cube.axes });
+      const solo = await net(alone(first.data, p.a), `Lining up series ${k + 2} of ${partners.length + 1} of this study…`);
+      const fitAt = alignProb(solo.prob, base.prob);
+      // a series that cannot be lined up (another body part, a failed scan) is left out
+      if (fitAt.fit < 0.6 || fitAt.turn > 20 || fitAt.shift > 40) { moved.push({ axis: p.a, used: false, turn: fitAt.turn, shift: fitAt.shift, fit: fitAt.fit }); continue; }
+      cubes[p.a] = conform(p.vol, { ...opts, ...movedCube(cube.c0, cube.axes, fitAt.R, fitAt.t) }).data;
+      moved.push({ axis: p.a, used: true, turn: fitAt.turn, shift: fitAt.shift, fit: fitAt.fit });
+    }
+    if (moved.some((m) => m.used)) { ran = runs - 1; out = await net(cubes, 'The brain model looks at the series together…'); }
+  }
+  onProgress(1, 'Brain model done');
+  const used = 1 + moved.filter((m) => m.used).length;
+  return { labels: out.labels, prob: out.prob, c0: cube.c0, axes: cube.axes, classes: model.classes, ms: performance.now() - t0, box: out.box,
+    study: { used, of: 1 + offered, moved } };
 }
