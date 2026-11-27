@@ -67,6 +67,27 @@
       <h3>3D models</h3>
       <p class="hint" id="models-hint"></p>
       <div id="targets"></div>
+      <div id="brain-how">
+        <label class="row" title="How the brain is found in an MRI scan. The AI models are small neural networks that run on this computer's graphics card: they know what a brain looks like, so the folds come out full and the cerebellum and brain stem are found as they are. They were trained on T1-weighted scans. The classic method traces an outline and cuts the folds by brightness, and works on any kind of scan. Nothing leaves this computer either way."><span>Brain finder</span>
+          <select id="m-model">
+            <option value="auto">Auto</option>
+            <optgroup label="AI models (on the graphics card)">
+              <option value="partsBig">Subcortical + GWM: whole brain, 18 parts (best)</option>
+              <option value="parts">Subcortical + GWM: whole brain, 18 parts (quicker)</option>
+              <option value="tissue">Tissue GWM: gray and white matter (high accuracy)</option>
+              <option value="tissueFast">Tissue GWM: gray and white matter (light)</option>
+              <option value="maskFast">Brain mask (fast)</option>
+              <option value="mask">Brain mask (high accuracy)</option>
+              <option value="areas50">Aparc+Aseg: 50 regions</option>
+              <option value="areas104">Aparc+Aseg: 104 regions</option>
+            </optgroup>
+            <optgroup label="Without AI">
+              <option value="classic">Classic: outline and folds</option>
+            </optgroup>
+          </select>
+        </label>
+        <p class="hint" id="m-model-why"></p>
+      </div>
       <label class="row"><span>Detail</span>
         <select id="seg-detail"><option value="1.4">Fast (1.4 mm)</option><option value="1" selected>Standard (1 mm)</option><option value="0.7">Fine (0.7 mm)</option></select>
       </label>
@@ -94,8 +115,18 @@
         </label>
         <label class="check" title="Fills spaces that are completely enclosed, so the model is solid inside."><input type="checkbox" id="f-fill"> Fill hollow spaces inside</label>
       </details>
+      <details id="ai-more">
+        <summary>Fine-tune the AI model</summary>
+        <p class="hint">The model finds the brain by itself; these only adjust its edge. With this panel open the slices show what it found: <i class="sw brain"></i> brain.</p>
+        <label class="row" title="How sure the model must be that a spot is brain before it counts. Stricter opens the folds wider and trims the edge; looser fills the folds in."><span>How sure it must be</span><input type="range" id="a-level" min="-5" max="5" step="1"><output></output></label>
+        <label class="row" title="Moves the finished surface out or in by this much everywhere."><span>Pad or shave</span><input type="range" id="a-grow" min="-2" max="2" step="0.5"><output></output></label>
+        <label class="row" title="How much of the brain stem is kept below the cerebellum. Further down the model sometimes mistakes parts of the neck for brain."><span>Brain stem kept</span><input type="range" id="a-stump" min="0" max="30" step="2"><output></output></label>
+        <label class="check" title="Tints the slices with what the model found, without building the 3D model."><input type="checkbox" id="a-live" checked> Show what the model found on the slices</label>
+        <div id="a-status"></div>
+        <button class="btn" id="a-reset" type="button">Back to automatic</button>
+      </details>
       <details id="mr-more">
-        <summary>Fine-tune the MRI brain</summary>
+        <summary>Fine-tune the classic brain finder</summary>
         <p class="hint">Say what looks wrong, or move the sliders. The slices show the result straight away: <i class="sw brain"></i> brain, <i class="sw fluid"></i> fluid inside the outline. When it looks right, press “Create 3D models”.</p>
         <label class="row" title="Each choice sets the sliders below for one common problem. You can still move them afterwards."><span>What looks wrong?</span>
           <select id="m-preset"></select>
@@ -151,7 +182,7 @@
     <div class="chips" id="cmp-look">
       <button data-v="A">Front</button><button data-v="P">Back</button><button data-v="L">Left</button><button data-v="R">Right</button><button data-v="S">Top</button><button data-v="I">Bottom</button>
     </div>
-    <button class="btn" id="cmp-more" title="Adds twelve more versions, each with a mix of settings that has not been tried on this series yet">Try 12 more that have not been tried</button>
+    <button class="btn" id="cmp-more" title="Adds thirty more versions (AI models and classic), each with a mix of settings that has not been tried on this series yet">Try 30 more that have not been tried</button>
     <button class="btn" id="cmp-close">Close without choosing</button>
   </header>
   <div id="cmp-grid"></div>

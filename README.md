@@ -146,13 +146,16 @@ recipe do, implemented from scratch in `public/js/segworker.js`:
    every scan carries, are averaged. The result is added to the list as a
    "Combined" series, in memory only, until the page is reloaded. It is never
    done automatically.
-5. **Try many versions and compare** (MRI): builds the brain 28 ways (finish from
-   raw to smooth, fold depth, slice blending, outline fuller or tighter, a finer
-   grid, and so on) and shows them in a scrolling grid that turns together.
-   "Try 12 more" adds mixes of settings not tried on that series yet. Picking one
-   uses its model and settings, and can make those settings the starting point
-   for every scan of the same kind. Each version is built on its own, several
-   at a time, within a memory budget.
+5. **Try many versions and compare** (MRI): builds the brain about 70 ways and
+   shows them in a scrolling grid that turns together, in two groups that fold
+   away with a click on their heading: **AI models** (every network, with mixes
+   of how sure it must be, padding, brain stem, finish and grid) and **Classic
+   method** (finish from raw to smooth, fold depth, slice blending, outline
+   fuller or tighter, and so on). "Try 30 more" adds mixes of settings not tried
+   on that series yet, half of them AI. Picking one uses its model and settings,
+   and can make them the starting point for every scan of the same kind. Several
+   are built at a time, sharing the processor cores; the networks run one at a
+   time on the graphics card and each answer is reused.
 
 The **Colors** button in the 3D toolbar (or the T key) hides and shows the
 tint on the slices.
@@ -189,6 +192,28 @@ are split across helper threads that share memory, up to 13 threads. That needs
 an "isolated" page: it works on `localhost` and over `https`; over plain `http`
 to another machine the builder falls back to one core per part (about twice as
 slow). Display (slices, 3D view, models) is drawn by the graphics card.
+
+## AI brain models (MRI)
+
+For MRI, **Brain finder** (above "Detail") chooses how the brain is found:
+
+- **AI models**: small neural networks that run on this computer's graphics card
+  through WebGPU (a current Chrome or Edge). They are the "MeshNet" models of
+  [brainchop](https://github.com/neuroneural/brainchop) as shipped with
+  [brain2print](https://github.com/niivue/brain2print) (MIT license, see
+  `public/models/LICENSE-brain2print.txt`), run by Viewscan's own WebGPU code in
+  `public/js/brainnet.js`; no library is loaded and nothing leaves the computer.
+  The list mirrors brain2print's: Subcortical + GWM (18 parts; the best one, and
+  what **Auto** uses), Tissue GWM, Brain mask, Aparc+Aseg 50 and 104.
+  They were trained on T1-weighted scans; Auto uses the classic method for T2 and
+  proton-density scans, and anywhere WebGPU is missing.
+- **Classic**: the outline-and-folds method described below. Works on any scan.
+
+Each has its own fine-tune panel, and the settings of one are not used by the
+other. With a panel open, the slices are tinted with what was found. The mesh
+follows the network's answer closely: in `test/ai.py` 99.7% of the mesh points lie
+on the surface the network found. A network takes about 3 to 8 seconds on a
+recent graphics card, once per series; other settings then reuse its answer.
 
 ## Tests
 

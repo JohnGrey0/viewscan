@@ -83,8 +83,9 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
 - The live MRI preview is the same `segmentMR` on a 2 mm grid in one long-lived
   worker (`type: 'preview'`); steps are memoized on `grid.memo`, so keep each
   step's inputs in its memo key when adding settings.
-- Compare grid (`openCompare`, `MR_VARIANTS`, `freshVariants` in `main.js`): 28
-  brain builds side by side, plus "Try 12 more" with untried mixes, drawn with the
+- Compare grid (`openCompare`, `MR_VARIANTS`, `freshVariants` in `main.js`): about 70
+  brain builds in two foldable groups (`AI_VARIANTS`, then the classic `MR_VARIANTS`;
+  the owner asked for 50 to 100, kept apart), plus "Try 30 more" with untried mixes, drawn with the
   shared GL renderer into one canvas per tile. The owner wants detail, not blobs:
   keep the list weighted toward crisp finishes and deeper folds. A chosen version
   can become the default for its kind of scan (`mrdef.<kind key>` in localStorage;
@@ -113,7 +114,7 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
 - Auto fold tuning (owner, 2026-11-25: the first adaptive version made "a TON of folds",
   too aggressive, and left pits at the back): the fold field is blurred 1.1 mm before
   the cut, the shell share is 27%, and openings with a small footprint in the outer
-  3.5 mm of the brain (under 400 mm3) are filled back in. His favorite on his own
+  3.5 mm of the brain (under 400 mm3) are filled back in. The owner's favorite on a private
   scout: fine grid, Crisp finish (no smoothing, soften 0.6, main piece only), outline
   -2, stiffness +2, folds normal, split +2. It is the second tile of the compare grid.
 - "Copy these settings" (`settingsText`) puts every model setting on the clipboard as
@@ -136,6 +137,30 @@ Mac mini with `./up.sh viewscan`. Port 8130 belongs to the Manhwa Reader.
   sequence family, contrast from the description). The result is a synthetic
   series (`st.combined`, a pinned `Stack` in `app.stacks`) that lives in memory
   only. `node test/fuselab.mjs` shows base / plain average / combined side by side.
+- AI brain models (`brainnet.js`, `aiworker.js`, `brainModel` in `segment.js`,
+  `brainFromModel` in `segworker.js`, models in `public/models/`): the owner asked
+  for brain2print's models after the classic fold work hit its limit. They are
+  brainchop MeshNets (MIT), run with our own WebGPU compute shaders: conform to a
+  256 cube at 1 mm (axes: left, down, front), scale brightness the way each model
+  was trained (`MODELS` holds brain2print's per-model settings), crop, run the
+  layers in 16-plane slabs, read back label + "how sure it is brain". The answer is
+  kept on the volume (`vol.ai`), so tweaks and the compare grid do not rerun it.
+  `brainFromModel` puts it on the working grid; the surface is the 0.5 level of
+  "how sure", cleaned of the neck below the cerebellum (18-part models only).
+  Auto = `partsBig` when a WebGPU device really opens (`gpuReady`) and the scan is
+  not T2/PD. Found on a private clinical study: Auto with a stricter level
+  looks right; the fast mask model is rough. Model choice and AI settings are
+  stored apart from the classic settings (`model.<stack id>`, `ai.<stack id>`) and
+  have their own panel (`#ai-more`); the owner does not want them mixed.
+  Playwright's bundled Chromium cannot open a WebGPU device on Windows: `test/ai.py`
+  uses installed Chrome; every other test therefore runs the classic method.
+- An experiment that cut deeper folds as thin slits and found the gap between the
+  halves as a curved sheet was dropped at the owner's request in favor of the
+  models (the sheet-based split was clean; the slits came out ragged).
+- Networks run one at a time (`aiLine` in `segment.js`): several WebGPU devices at
+  once would each hold over a gigabyte on one card. Without WebGPU the compare grid
+  shows the classic group only.
+- "Locate" is the default mouse tool in 3D (the owner asked); 2D falls back to Scroll.
 - Static hosting (`pages` branch, GitHub Pages): the page asks for `api/library`
   with a relative address; an answer that is not the Viewscan server sets
   `app.hosted` and the page runs on opened folders only. `isolate.js` + `sw.js` add
